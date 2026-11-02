@@ -1,0 +1,177 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bypass:
+        description: "relax version check"
+        required: true
+        type: boolean
+        default: true
+      upload_romfs:
+        description: "include large data image"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  SRC_REPO: ${{ secrets.SRC_REPO }}
+  SRC_COMMIT: ${{ secrets.SRC_COMMIT }}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Log scrubber
+        run: |
+          mkdir -p "$HOME/bin"
+          printf '%s\n' '#!/bin/sh' "exec sed -E 's/[Pp][Oo][Kk][Oo][Pp][Ii][Aa]/app/g; s/[Pp][Oo][Kk][EeÉé][Mm][Oo][Nn]/app/g; s/0[0-9A-Fa-f]{15}/TID/g; s/[Ff]ractals/x/g'" > "$HOME/bin/scrub"
+          chmod +x "$HOME/bin/scrub"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Machine info
+        run: |
+          sw_vers
+          xcodebuild -version || true
+          xcrun --sdk iphoneos --show-sdk-version || true
+          df -h / | tail -1
+          sysctl -n hw.memsize | awk '{printf "RAM: %.0f GB\n", $1/1073741824}'
+
+      - name: Fetch tools
+        run: |
+          set -euo pipefail
+          git clone -q "https://github.com/${SRC_REPO}.git" "$RUNNER_TEMP/pn" 2>&1 | sed 's/.*/(clone output hidden)/' | head -1
+          git -C "$RUNNER_TEMP/pn" checkout -q "$SRC_COMMIT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd glslang unar sevenzip
+          python -m pip install --upgrade pip
+          python -m pip install "capstone>=5,<6" lz4 fonttools gdown
+          xcodebuild -downloadComponent MetalToolchain || echo "::warning::Metal toolchain download skipped or failed"
+          xcodebuild -downloadPlatform iOS || echo "::warning::iOS platform download skipped or failed"
+
+      - name: Download and unpack your dump
+        env:
+          DUMP_URL: ${{ secrets.DUMP_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "${DUMP_URL:-}" ] || { echo "::error::Add the DUMP_URL secret"; exit 1; }
+          W="$RUNNER_TEMP/work"; mkdir -p "$W/dl" "$W/dump"
+          ID="$(python - "$DUMP_URL" <<'PY'
+          import re, sys
+          from urllib.parse import urlparse, parse_qs
+          u = sys.argv[1].strip(); p = urlparse(u); q = parse_qs(p.query); fid = None
+          if "drive.google.com" in p.netloc:
+              m = re.search(r"/file/d/([^/]+)", p.path)
+              fid = m.group(1) if m else (q.get("id") or [None])[0]
+          if not fid and re.fullmatch(r"[-A-Za-z0-9_]{20,}", u): fid = u
+          if not fid: raise SystemExit("Could not read a Google Drive file ID from DUMP_URL")
+          print(fid)
+          PY
+          )"
+          gdown "$ID" -O "$W/dl/dump.archive"
+          test -s "$W/dl/dump.archive"
+          unar -q -o "$W/dump" "$W/dl/dump.archive"
+          rm -rf "$W/dl"
+          # locate <root>/updates/<version>/exefs/main
+          MAIN="$(find "$W/dump" -maxdepth 6 -path '*/updates/*/exefs/main' -print -quit)"
+          [ -n "$MAIN" ] || { echo "::error::No updates/<version>/exefs/main found in the archive"; exit 1; }
+          ROOT="$(cd "$(dirname "$MAIN")/../../.." && pwd)"
+          echo "DUMP_ROOT=$ROOT" >> "$GITHUB_ENV"
+          echo "Dump unpacked. Update folders found:"; ls "$ROOT/updates"
+          df -h / | tail -1
+
+      - name: Accept a newer game update (experimental)
+        if: ${{ inputs.version_bypass }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib, re
+          pn = pathlib.Path(os.environ["RUNNER_TEMP"]) / "pn"
+          root = pathlib.Path(os.environ["DUMP_ROOT"])
+          mains = sorted(root.glob("updates/*/exefs/main"))
+          m = mains[-1]                       # the newest update in the dump
+          ver = m.parent.parent.name
+          assert ver.isdigit(), f"unexpected update folder name {ver}"
+          bid = m.read_bytes()[0x40:0x50].hex()   # NSO build ID, first 16 bytes
+          print(f"dump update {ver}, main build ID {bid}")
+          tsv = next((pn / "profile").glob("*/game.tsv"))
+          t = tsv.read_text()
+          old_main = re.search(r"main=([0-9a-f]{32})", t).group(1)
+          t = t.replace(old_main, bid).replace("327680", ver)
+          tsv.write_text(t)
+          nx = pn / "nxs2.py"
+          s = nx.read_text()
+          s2 = re.sub(r"^VERSION = \d+", f"VERSION = {ver}", s, flags=re.M)
+          assert s2 != s or f"VERSION = {ver}" in s
+          nx.write_text(s2)
+          print(f"recipe now accepts main {bid} (was {old_main}), update {ver}")
+          PY
+
+      - name: setup + doctor
+        working-directory: ${{ runner.temp }}/pn
+        run: |
+          python nxs2.py setup 2>&1 | scrub | tail -15
+          python nxs2.py doctor 2>&1 | scrub || true
+
+      - name: Build (this takes about an hour)
+        working-directory: ${{ runner.temp }}/pn
+        run: |
+          set +e
+          python nxs2.py build "$DUMP_ROOT" --ipa -j 3 > "$RUNNER_TEMP/build.log" 2>&1
+          STATUS=$?
+          echo "build exit code: $STATUS"
+          echo "--- last lines of the build output ---"
+          tail -n 40 "$RUNNER_TEMP/build.log" | scrub
+          echo "BUILD_STATUS=$STATUS" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Collect and encrypt results
+        if: always()
+        env:
+          PW: ${{ secrets.ARTIFACT_PASSWORD }}
+          UPLOAD_ROMFS: ${{ inputs.upload_romfs }}
+        run: |
+          set -uo pipefail
+          [ -n "${PW:-}" ] || { echo "::error::Add the ARTIFACT_PASSWORD secret (refusing to upload unencrypted)"; exit 1; }
+          OUT="$(dirname "$DUMP_ROOT")"; B="${DUMP_ROOT}_native"
+          [ -d "$B" ] || B="$(find "$RUNNER_TEMP/work" -maxdepth 2 -name '*_native' -type d -print -quit)"
+          S="$RUNNER_TEMP/stage"; mkdir -p "$S"
+          cp "$RUNNER_TEMP/build.log" "$S/" 2>/dev/null || true
+          if [ -n "${B:-}" ] && [ -d "$B" ]; then
+            echo "Build folder contents (top level):"; ls "$B"
+            [ -d "$B/out" ]  && cp -R "$B/out"  "$S/out"
+            [ -d "$B/logs" ] && cp -R "$B/logs" "$S/logs"
+            if [ "$UPLOAD_ROMFS" = "true" ] && [ -f "$B/extract/RomFS.img" ]; then cp "$B/extract/RomFS.img" "$S/"; fi
+          fi
+          cd "$S" && ls -la
+          7zz a -p"$PW" -mhe=on -mx=1 "$RUNNER_TEMP/results.7z" . >/dev/null
+          ls -lh "$RUNNER_TEMP/results.7z"
+
+      - name: Upload (encrypted)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-encrypted
+          path: ${{ runner.temp }}/results.7z
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/work" "$RUNNER_TEMP/stage" "$RUNNER_TEMP/build.log"
