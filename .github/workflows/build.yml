@@ -129,6 +129,21 @@ jobs:
           python nxs2.py setup 2>&1 | scrub | tail -15
           python nxs2.py doctor 2>&1 | scrub || true
 
+      - name: Compatibility fix for the runner SDK
+        run: |
+          set -euo pipefail
+          F="$RUNNER_TEMP/pn/nxnative/dm/ios/Sources/DmGamepad.m"
+          python - "$F" <<'PY2'
+          import sys
+          p=sys.argv[1]; s=open(p).read()
+          old='    if (@available(iOS 27.0, *)) { g_motion.deviceMotionBody = body;'
+          assert old in s, "line not found"
+          new='#if defined(__IPHONE_27_0)\n'+old
+          i=s.index(old); j=s.index('\n', i)
+          s=s[:i]+new+s[i+len(old):j]+'\n#endif'+s[j:]
+          open(p,'w').write(s); print("patched")
+          PY2
+
       - name: Build (this takes about an hour)
         working-directory: ${{ runner.temp }}/pn
         run: |
@@ -157,6 +172,7 @@ jobs:
             echo "Build folder contents (top level):"; ls "$B"
             [ -d "$B/out" ]  && cp -R "$B/out"  "$S/out"
             [ -d "$B/logs" ] && cp -R "$B/logs" "$S/logs"
+            find "$B/ipa" -name build.log -size -20M -exec cp {} "$S/app-build.log" \; 2>/dev/null
             if [ "$UPLOAD_ROMFS" = "true" ] && [ -f "$B/extract/RomFS.img" ]; then cp "$B/extract/RomFS.img" "$S/"; fi
           fi
           cd "$S" && ls -la
