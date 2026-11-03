@@ -8,6 +8,11 @@ on:
         required: true
         type: boolean
         default: true
+      app_pool:
+        description: "Memory the game is told it has, hex (blank = leave the recipe's 0x280000000 = 10 GiB). Try 0x200000000 for 8 GiB. The recipe says it panics below ~7.9 GiB."
+        required: false
+        type: string
+        default: ""
       upload_romfs:
         description: "include large data image"
         required: true
@@ -169,6 +174,30 @@ jobs:
           [ -n "$D" ] || { echo "::error::no recorded files found in the archive"; exit 1; }
           echo "recorded files: $(ls "$D"/*.ctl | wc -l)"
           echo "REC_DIR=$D" >> "$GITHUB_ENV"
+
+      - name: Set the memory the game is told it has
+        if: ${{ inputs.app_pool != '' }}
+        env:
+          APP_POOL: ${{ inputs.app_pool }}
+        run: |
+          set -euo pipefail
+          python - <<'PY2'
+          import os, pathlib, re
+          want = os.environ["APP_POOL"].strip().lower()
+          if not re.fullmatch(r"0x[0-9a-f]{4,12}", want):
+              raise SystemExit(f"app_pool must look like 0x200000000, got {want!r}")
+          val = int(want, 16)
+          if not (0x100000000 <= val <= 0x300000000):
+              raise SystemExit("app_pool outside the sane 4 GiB - 12 GiB range")
+          tsv = next((pathlib.Path(os.environ["RUNNER_TEMP"]) / "pn" / "profile").glob("*/game.tsv"))
+          t = tsv.read_text()
+          m = re.search(r"^app_pool\t(0x[0-9A-Fa-f]+)$", t, re.M)
+          if not m:
+              raise SystemExit("no app_pool line in the profile")
+          t = t[:m.start(1)] + want + t[m.end(1):]
+          tsv.write_text(t)
+          print(f"app_pool {m.group(1)} -> {want}  ({val / 2**30:.2f} GiB)")
+          PY2
 
       - name: Build (this takes about an hour)
         working-directory: ${{ runner.temp }}/pn
