@@ -149,6 +149,26 @@ jobs:
           open(p,'w').write(s); print("patched")
           PY2
 
+      - name: Let the memory accountant start from env.txt on iOS
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/pn/nxnative" <<'PY4'
+          import sys, pathlib
+          nx = pathlib.Path(sys.argv[1])
+          m = nx / "dm/host/memstat.m"; s = m.read_text()
+          old = '__attribute__((constructor)) static void memstat_start(void) {\n    const char *p = getenv("DM_MEMSTAT");\n    if (!p || !*p) return;\n'
+          new = ('static int g_memstat_on;\n'
+                 '__attribute__((constructor)) static void memstat_start(void) {\n    const char *p = getenv("DM_MEMSTAT");\n    if (!p || !*p || g_memstat_on) return;\n    g_memstat_on = 1;\n')
+          assert old in s, "memstat start not found"
+          s = s.replace(old, new) + '\n// iOS: the constructor runs before Documents/env.txt is read; main.m calls this once the env file is applied\nvoid dm_memstat_late(void) { memstat_start(); }\n'
+          m.write_text(s)
+          mm = nx / "dm/ios/Sources/main.m"; t = mm.read_text()
+          hook = '    front_hud_env();'
+          assert t.count(hook) == 1, "hook not unique"
+          t = t.replace(hook, '    { extern void dm_memstat_late(void); dm_memstat_late(); }   // DM_MEMSTAT from env.txt\n' + hook)
+          mm.write_text(t); print("memstat late start patched")
+          PY4
+
       - name: Fetch recorded data (optional)
         env:
           REC_URL: ${{ secrets.REC_URL }}
