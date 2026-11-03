@@ -144,11 +144,38 @@ jobs:
           open(p,'w').write(s); print("patched")
           PY2
 
+      - name: Fetch recorded data (optional)
+        env:
+          REC_URL: ${{ secrets.REC_URL }}
+        run: |
+          set -euo pipefail
+          echo "REC_DIR=" >> "$GITHUB_ENV"
+          [ -n "${REC_URL:-}" ] || { echo "no recorded data configured"; exit 0; }
+          W="$RUNNER_TEMP/rec"; mkdir -p "$W/dl" "$W/x"
+          ID="$(python - "$REC_URL" <<'PY3'
+          import re, sys
+          from urllib.parse import urlparse, parse_qs
+          u = sys.argv[1].strip(); p = urlparse(u); q = parse_qs(p.query); fid = None
+          m = re.search(r"/file/d/([^/]+)", p.path)
+          fid = m.group(1) if m else (q.get("id") or [None])[0]
+          if not fid and re.fullmatch(r"[-A-Za-z0-9_]{20,}", u): fid = u
+          if not fid: raise SystemExit("could not read an ID from REC_URL")
+          print(fid)
+          PY3
+          )"
+          gdown "$ID" -O "$W/dl/rec.archive"
+          unar -q -o "$W/x" "$W/dl/rec.archive"
+          D="$(find "$W/x" -name '*.ctl' -print -quit | xargs -r dirname)"
+          [ -n "$D" ] || { echo "::error::no recorded files found in the archive"; exit 1; }
+          echo "recorded files: $(ls "$D"/*.ctl | wc -l)"
+          echo "REC_DIR=$D" >> "$GITHUB_ENV"
+
       - name: Build (this takes about an hour)
         working-directory: ${{ runner.temp }}/pn
         run: |
           set +e
-          python nxs2.py build "$DUMP_ROOT" --ipa -j 3 > "$RUNNER_TEMP/build.log" 2>&1
+          EXTRA=""; [ -n "${REC_DIR:-}" ] && EXTRA="--dumps $REC_DIR"
+          python nxs2.py build "$DUMP_ROOT" --ipa -j 3 $EXTRA > "$RUNNER_TEMP/build.log" 2>&1
           STATUS=$?
           echo "build exit code: $STATUS"
           echo "--- last lines of the build output ---"
