@@ -169,6 +169,44 @@ jobs:
           mm.write_text(t); print("memstat late start patched")
           PY4
 
+      - name: Pool windows (DM_POOL_WINDOW_MB)
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/pn/nxnative" <<'PY5'
+          import sys, pathlib
+          p = pathlib.Path(sys.argv[1]) / "dm/gfx/nvn/nvn_mtl.m"; s = p.read_text()
+          # 1. the existing function becomes the one-buffer worker, keyed by the pool it belongs to
+          a = "void mtl_pool_add(const void *mem, uint64_t size) {\n"
+          assert s.count(a) == 1, "mtl_pool_add head"
+          s = s.replace(a, "static void mtl_pool_add1(const void *mem, uint64_t size, const void *key) {\n")
+          b = "g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, buf.gpuAddress, mem, 0};"
+          assert s.count(b) == 1, "pool entry"
+          s = s.replace(b, "g_pools[g_npool++] = (pool_ent){lo, hi, a, buf, buf.gpuAddress, key, 0};")
+          # 2. the public entry point: large pools become overlapping windows, each made resident on its own first use
+          c = "void mtl_pool_del(const void *mem) {\n"
+          assert s.count(c) == 1, "mtl_pool_del head"
+          s = s.replace(c, '''// DM_POOL_WINDOW_MB=<W> (iPad port patch): a pool larger than 2W is wrapped as overlapping no-copy buffers of W MB starting every W/2 MB instead of one.
+          // Making a zero-copy buffer resident wires every page of it; on an 8 GB iPad one 3.8 GB pool was wired whole within a second of boot, untouched pages included,
+          // and iOS could compress none of it. A window is made resident only when the GPU first addresses something in it (pool_res), so unaddressed parts stay pageable.
+          // Any range up to W/2 MB long fits in the window that starts last at or before it (pool_find). Off (0 or unset): one buffer per pool, as before
+          void mtl_pool_add(const void *mem, uint64_t size) {
+              static long win = -1; if (win < 0) { const char *e = getenv("DM_POOL_WINDOW_MB"); win = e ? atol(e) : 0; if (win < 0) win = 0; }
+              uint64_t W = (uint64_t)win << 20, S = W / 2;
+              if (!W || size <= 2 * W) { mtl_pool_add1(mem, size, mem); return; }
+              int n = 0;
+              for (uint64_t o = 0; o < size; o += S) { uint64_t len = size - o < W ? size - o : W; mtl_pool_add1((const uint8_t *)mem + o, len, mem); n++; if (o + len >= size) break; }
+              MLOG("memory pool %p+%#llx: %d overlapping windows of %ld MB, each resident on its own first use (DM_POOL_WINDOW_MB)", mem, (unsigned long long)size, n, win);
+          }
+
+          void mtl_pool_del(const void *mem) {
+          ''')
+          # 3. deleting a pool removes all of its windows, not just the first entry found
+          d = "atomic_fetch_add(&g_pool_gen, 1); break; }"
+          assert s.count(d) == 1, "pool_del break"
+          s = s.replace(d, "atomic_fetch_add(&g_pool_gen, 1); i--; }")
+          p.write_text(s); print("pool windows patched")
+          PY5
+
       - name: Fetch recorded data (optional)
         env:
           REC_URL: ${{ secrets.REC_URL }}
