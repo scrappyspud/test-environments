@@ -215,6 +215,27 @@ jobs:
           p.write_text(s); print("pool scan patched")
           PY6
 
+      - name: Pool wrap cap (DM_POOL_WRAP_MB)
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/pn/nxnative" <<'PY7'
+          import sys, pathlib
+          p = pathlib.Path(sys.argv[1]) / "dm/gfx/nvn/nvn_mtl.m"; s = p.read_text()
+          a = "void mtl_pool_add(const void *mem, uint64_t size) {\n    mtl_init(); g_reg_gen++;\n"
+          assert s.count(a) == 1, "mtl_pool_add head"
+          s = s.replace(a, a + r'''    // DM_POOL_WRAP_MB=<N> (iPad port patch): a pool of 1 GB or more larger than N MB is wrapped for the GPU only over its first N MB, as one buffer starting where the pool
+              // starts (the same GPU base, so addresses into the front stay valid). Making the buffer resident wires every page of it; on an 8 GB iPad Pokopia's 3.5 GB pool was
+              // wired whole a moment into the boot with 4 MB written, and its last ~550 MB were still never written a minute in. A lookup past N MB finds no pool, as for any
+              // address outside the game's pools (logged, the access skipped). Unset or 0: the whole pool, as before
+              { static long cap = -1; if (cap < 0) { const char *e = getenv("DM_POOL_WRAP_MB"); cap = e ? atol(e) : 0; if (cap < 0) cap = 0; }
+                if (cap && size >= (1ull << 30) && size > ((uint64_t)cap << 20)) {
+                    MLOG("memory pool %p+%#llx: only its first %ld MB wrapped for the GPU, the last %llu MB left unwired (DM_POOL_WRAP_MB)", mem, (unsigned long long)size, cap,
+                         (unsigned long long)((size - ((uint64_t)cap << 20)) >> 20));
+                    size = (uint64_t)cap << 20; } }
+          ''')
+          p.write_text(s); print("pool wrap cap patched")
+          PY7
+
       - name: Fetch recorded data (optional)
         env:
           REC_URL: ${{ secrets.REC_URL }}
