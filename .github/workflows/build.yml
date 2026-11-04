@@ -236,6 +236,91 @@ jobs:
           p.write_text(s); print("pool wrap cap patched")
           PY7
 
+      - name: Half-resolution textures (DM_TEX_HALF)
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/pn/nxnative" <<'PY8'
+          import sys, pathlib
+          p = pathlib.Path(sys.argv[1]) / "dm/gfx/nvn/nvn_mtl.m"; s = p.read_text()
+          def rep(old, new, count=1):
+              global s
+              n = s.count(old)
+              assert n == count, f"anchor found {n}x (want {count}): {old[:70]!r}"
+              s = s.replace(old, new)
+
+          # 1. helpers, ahead of tex_desc
+          rep("static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {\n", r'''// DM_TEX_HALF=<N> (iPad port patch): a block-compressed 2D texture of N x N or more with a mip chain gets a host texture without its level 0, half its size (a "medium texture
+          // quality"): the game's level L lives in the host's level L - 1, which has exactly that level's size, so every write and read of level L >= 1 lands unchanged one level down and a
+          // write of level 0 is skipped. Whether a host texture is one is read from its own size against the game's (lod_of), never stored, so no path that remakes a texture can lose it.
+          // The game's own copy in its memory pool is not changed. Render targets, images, linear, sparse and multisample textures are never halved. Unset or 0: off
+          static int lod_min(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TEX_HALF"); v = e ? atoi(e) : 0; if (v < 0) v = 0; } return v; }
+          static int lod_want(const tex_t *t) {
+              int m = lod_min();
+              if (!m || !t || t->d.target != 1 || t->d.levels < 2 || t->d.samples > 1 || !fmt_compressed(t->d.format)) return 0;
+              if (t->d.width < (uint32_t)m || t->d.height < (uint32_t)m) return 0;
+              if (t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
+              if (t->pool && (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL)) return 0;
+              return 1;
+          }
+          static inline unsigned lod_of(const tex_t *t, id<MTLTexture> m) {   // 1 when m is the halved host texture of t
+              return t && m && !m.parentTexture && m.textureType == MTLTextureType2D && t->d.target == 1 && t->d.width > 1 && m.width < t->d.width ? 1u : 0u;
+          }
+          static inline unsigned lod_lv(const tex_t *t, id<MTLTexture> m, unsigned level) {   // the game's level → the host's; 0xFFFFFFFFu: level 0 of a halved texture (skipped)
+              return lod_of(t, m) ? (level ? level - 1 : 0xFFFFFFFFu) : level;
+          }
+          static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
+          ''')
+          # 2. halve the descriptor
+          rep("    if (d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) d.usage |= MTLTextureUsagePixelFormatView;\n    return d;\n}\n",
+              "    if (d.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) d.usage |= MTLTextureUsagePixelFormatView;\n"
+              "    if (lod_want(t) && d.mipmapLevelCount > 1) {\n"
+              "        static uint64_t n; if (n++ < 4) MLOG(\"half-resolution texture (DM_TEX_HALF): ser=%llu %ux%u, %lu levels → %lux%lu, %lu levels\", (unsigned long long)t->serial, t->d.width, t->d.height,\n"
+              "                                         (unsigned long)d.mipmapLevelCount, (unsigned long)MAX(d.width >> 1, 1u), (unsigned long)MAX(d.height >> 1, 1u), (unsigned long)d.mipmapLevelCount - 1);\n"
+              "        d.width = MAX(d.width >> 1, 1u); d.height = MAX(d.height >> 1, 1u); d.mipmapLevelCount -= 1;\n"
+              "    }\n    return d;\n}\n")
+          # 3. uploads from the game's storage (first upload, re-uploads, initial fill): start one level in, write one level down
+          rep("    if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;\n",
+              "    if (lod_want(t)) direct = 0;   // the direct deswizzle writes level by level into a view of all levels\n"
+              "    if (direct) d.usage |= MTLTextureUsageShaderWrite | MTLTextureUsagePixelFormatView;\n")
+          rep("    res_add(mt);   // Both first upload and re-upload register residency here",
+              "    unsigned lodd = lod_of(t, mt);   // DM_TEX_HALF: the game's level l goes to the host's l - lodd\n"
+              "    res_add(mt);   // Both first upload and re-upload register residency here")
+          rep("        for (unsigned l = 0; enc_ok && l < d.mipmapLevelCount; l++) {\n",
+              "        for (unsigned l = lodd; enc_ok && l < d.mipmapLevelCount + lodd; l++) {\n")
+          rep("up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);",
+              "up_blit_add(stg, stg_off + off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l - lodd);")
+          cpu_head = ("    for (unsigned l = 0; l < d.mipmapLevelCount; l++) {\n"
+                      "        uint32_t w = MAX(t->d.width >> l, 1u), h = MAX(t->d.height >> l, 1u), z = t->d.target == 2 ? MAX(t->d.depth >> l, 1u) : 1;\n"
+                      "        size_t pitch = (size_t)((w + bw - 1) / bw) * bpb, rows = (h + bh - 1) / bh;\n"
+                      "        for (unsigned y = 0; y < layers; y++) {\n"
+                      "            if (nvn_deswizzle(")
+          rep(cpu_head, cpu_head.replace("for (unsigned l = 0; l < d.mipmapLevelCount; l++)", "for (unsigned l = lodd; l < d.mipmapLevelCount + lodd; l++)"))
+          rep("            up_blit_add(stg, off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l);",
+              "            up_blit_add(stg, off, pitch, pitch * rows, MTLSizeMake(w, h, z), mt, y, l - lodd);")
+          # 4. the game's copies and readbacks: its level → the host's; level 0 of a halved texture skipped
+          rep("static int tex_level_ok(id<MTLTexture> t, NSUInteger level, const char *what) {\n",
+              "static int tex_level_ok(id<MTLTexture> t, NSUInteger level, const char *what) {\n"
+              "    if (level == 0xFFFFFFFFu) return 0;   // level 0 of a DM_TEX_HALF texture: it has none\n")
+          rep('if (!tex_level_ok(t, level, "texture-to-buffer copy")) return;',
+              'if (!tex_level_ok(t, level = lod_lv(c->tex, t, level), "texture-to-buffer copy")) return;')
+          rep('if (!mt || !tex_level_ok(mt, level, "CPU readback")) {',
+              'if (!mt || !tex_level_ok(mt, level = lod_lv(t, mt, level), "CPU readback")) {')
+          rep('if (!tex_level_ok(t, level, "buffer-to-texture copy")) return;',
+              'if (!tex_level_ok(t, level = lod_lv(c->tex, t, level), "buffer-to-texture copy")) return;')
+          rep("    int rb = !is3d && tex_storage_dst(c->tex);",
+              "    int rb = !is3d && !lod_of(c->tex, t) && tex_storage_dst(c->tex);   // DM_TEX_HALF: no mirror of a halved texture's levels into the game's storage")
+          rep('if (!tex_level_ok(s, sl, "texture copy source") || !tex_level_ok(d, dl, "texture copy destination")) return;',
+              'if (!tex_level_ok(s, sl = lod_lv(c->src, s, sl), "texture copy source") || !tex_level_ok(d, dl = lod_lv(c->dst, d, dl), "texture copy destination")) return;')
+          # 5. sampling views: the game's level range → the host's
+          rep("        NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : base.mipmapLevelCount - l0;\n",
+              "        NSUInteger l0 = r.v.set_levels ? r.v.base_level : 0, nl = r.v.set_levels && r.v.nlevels ? r.v.nlevels : base.mipmapLevelCount - l0;\n"
+              "        if (lod_of(&rp->t, base)) {   // DM_TEX_HALF: levels l0.. of the game are the host's l0 - 1..; a view from level 0 starts at the host's 0 with one level fewer\n"
+              "            if (l0) { l0--; if (!(r.v.set_levels && r.v.nlevels)) nl = base.mipmapLevelCount - l0; }\n"
+              "            else if (r.v.set_levels && r.v.nlevels > 1) nl--;\n"
+              "        }\n")
+          p.write_text(s); print("DM_TEX_HALF patched")
+          PY8
+
       - name: Fetch recorded data (optional)
         env:
           REC_URL: ${{ secrets.REC_URL }}
