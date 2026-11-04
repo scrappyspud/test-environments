@@ -321,6 +321,67 @@ jobs:
           p.write_text(s); print("DM_TEX_HALF patched")
           PY8
 
+      - name: Render target store report (DM_STORE_REPORT, read-only)
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/pn/nxnative" <<'PY9'
+          import sys, pathlib
+          p = pathlib.Path(sys.argv[1]) / "dm/gfx/nvn/nvn_mtl.m"; s = p.read_text()
+          def once(a):
+              n = s.count(a); assert n == 1, f"anchor found {n}x: {a[:60]!r}"
+          # 1. the tally and its report, right after the attachment record type
+          a = "const char *wkey; int wslot; } sd_att;"; once(a)
+          i = s.index(a); j = s.index("\n", i) + 1
+          code = r'''// DM_STORE_REPORT=1 (iPad port diagnostic, read-only): every render-target write-back decision at a pass end is tallied by its outcome and reason, and with the memory readout
+          // (every 300 frames) one line gives the per-frame megabytes, then the eight textures that keep the most stored bytes. "Memoryless" counts skipped stores of attachments the pass did
+          // not load either (cleared or not read at its start): those need no memory outside the pass. Nothing it does changes what is rendered
+          static int g_srep = -1;
+          static uint64_t g_sr_b[8], g_sr_db, g_sr_mlb; static unsigned long long g_sr_frame0;
+          typedef struct { uint64_t ser, bytes, n; uint8_t why, depth; } sr_top;
+          static sr_top g_sr_top[64]; static int g_sr_ntop;
+          static int srep_on(void) { if (g_srep < 0) { const char *e = getenv("DM_STORE_REPORT"); g_srep = e && atoi(e) > 0; } return g_srep; }
+          static void store_note(const sd_att *t, int dead) {
+              if (!srep_on()) return;
+              if (dead) { g_sr_db += t->bytes; if (!t->load) g_sr_mlb += t->bytes; return; }
+              int w = t->why < 8 ? t->why : 7; g_sr_b[w] += t->bytes;
+              int k; for (k = 0; k < g_sr_ntop; k++) if (g_sr_top[k].ser == t->ser && g_sr_top[k].depth == t->depth) break;
+              if (k == g_sr_ntop) {
+                  if (g_sr_ntop < 64) g_sr_ntop++;
+                  else { int m = 0; for (int q = 1; q < 64; q++) if (g_sr_top[q].bytes < g_sr_top[m].bytes) m = q; k = m; }
+                  g_sr_top[k] = (sr_top){t->ser, 0, 0, (uint8_t)w, t->depth};
+              }
+              g_sr_top[k].bytes += t->bytes; g_sr_top[k].n++; g_sr_top[k].why = (uint8_t)w;
+          }
+          static void store_report(unsigned long long frame) {
+              if (!srep_on()) return;
+              unsigned long long nf = frame > g_sr_frame0 ? frame - g_sr_frame0 : 1; g_sr_frame0 = frame;
+              uint64_t kept = 0; for (int w = 0; w < 8; w++) kept += g_sr_b[w];
+          #define SRMB(x) ((unsigned long long)((x) / nf) >> 20)
+              MLOG("store report over %llu frames, per frame: stored %llu MB, skipped %llu MB (%llu MB of it memoryless-capable); stores kept because: read as a texture %llu MB, drawn into again %llu MB, copied %llu MB, "
+                   "texture clear %llu MB, not seen again in the submission %llu MB, no lookahead %llu MB", nf, SRMB(kept), SRMB(g_sr_db), SRMB(g_sr_mlb), SRMB(g_sr_b[1]), SRMB(g_sr_b[2]), SRMB(g_sr_b[3]),
+                   SRMB(g_sr_b[4]), SRMB(g_sr_b[5]), SRMB(g_sr_b[6] + g_sr_b[0] + g_sr_b[7]));
+              static const char *wn[8] = {"other", "read as a texture", "drawn into again", "copied", "texture clear", "not seen again in the submission", "no lookahead", "other"};
+              for (int r = 0; r < 8; r++) {
+                  int m = -1; for (int q = 0; q < g_sr_ntop; q++) if (g_sr_top[q].bytes && (m < 0 || g_sr_top[q].bytes > g_sr_top[m].bytes)) m = q;
+                  if (m < 0) break;
+                  MLOG("store report top %d: texture ser=%llu %s, %llu MB per frame in %llu stores per frame, kept: %s", r + 1, (unsigned long long)g_sr_top[m].ser,
+                       g_sr_top[m].depth == 1 ? "depth" : g_sr_top[m].depth == 2 ? "stencil" : "color", SRMB(g_sr_top[m].bytes), (unsigned long long)(g_sr_top[m].n / nf), wn[g_sr_top[m].why & 7]);
+                  g_sr_top[m].bytes = 0;
+              }
+          #undef SRMB
+              memset(g_sr_b, 0, sizeof g_sr_b); g_sr_db = g_sr_mlb = 0; g_sr_ntop = 0;
+          }
+          '''
+          s = s[:j] + code + s[j:]
+          # 2. tally each decision once its reason is final
+          a = "        if (!t->state) t->why = 5;\n"; once(a)
+          s = s.replace(a, a + "        store_note(t, dead);\n")
+          # 3. report with the memory readout
+          a = "void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) {\n"; once(a)
+          s = s.replace(a, "static void store_report(unsigned long long frame);\n" + a + "    store_report(frame);\n")
+          p.write_text(s); print("store report patched")
+          PY9
+
       - name: Fetch recorded data (optional)
         env:
           REC_URL: ${{ secrets.REC_URL }}
