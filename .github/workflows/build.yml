@@ -1,6 +1,10 @@
 name: build
 
 on:
+  # PAJI's branches build on push (same steps, version check relaxed, no large data image); pushing a file under trigger/ starts a rebuild
+  push:
+    branches: ['paji/**']
+    paths: ['.github/workflows/build.yml', 'trigger/**']
   workflow_dispatch:
     inputs:
       version_bypass:
@@ -102,7 +106,7 @@ jobs:
           df -h / | tail -1
 
       - name: Accept a newer game update (experimental)
-        if: ${{ inputs.version_bypass }}
+        if: ${{ inputs.version_bypass || github.event_name == 'push' }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -409,7 +413,7 @@ jobs:
           echo "REC_DIR=$D" >> "$GITHUB_ENV"
 
       - name: Set the memory the game is told it has
-        if: ${{ inputs.app_pool != '' }}
+        if: ${{ inputs.app_pool }}
         env:
           APP_POOL: ${{ inputs.app_pool }}
         run: |
