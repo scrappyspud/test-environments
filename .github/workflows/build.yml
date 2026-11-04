@@ -386,6 +386,42 @@ jobs:
           p.write_text(s); print("store report patched")
           PY9
 
+      - name: Render pass break report (DM_STORE_REPORT, read-only)
+        run: |
+          set -euo pipefail
+          python - "$RUNNER_TEMP/pn/nxnative" <<'PYA'
+          import sys, pathlib
+          p = pathlib.Path(sys.argv[1]) / "dm/gfx/nvn/nvn_mtl.m"; s = p.read_text()
+          def rep(a, b):
+              global s
+              n = s.count(a); assert n == 1, f"anchor found {n}x: {a[:60]!r}"
+              s = s.replace(a, b)
+          # DM_STORE_REPORT pass breaks (iPad port diagnostic, read-only): every place that ends a render pass is tallied by its source line, and when the next pass attaches the same
+          # targets again (a store and a reload a merged pass would not need) the line that ended the previous one gets the blame. Reported with the store report
+          rep("static void rp_end(void);\n",
+              "static void rp_end_(void);\n"
+              "static int g_pb_line, g_pb_end_line; static uint32_t g_pb_end[16384], g_pb_same[16384]; static uintptr_t g_pb_prev_key;   // DM_STORE_REPORT: pass ends by source line (see store_report)\n"
+              "#define rp_end() (g_pb_line = __LINE__, rp_end_())\n")
+          rep("static void rp_end(void) { if (g_enc) { AP_B;",
+              "static void rp_end_(void) { if (g_enc) { AP_B; g_pb_end_line = g_pb_line; if (g_pb_line > 0 && g_pb_line < 16384) g_pb_end[g_pb_line]++;")
+          rep("    g_enc = enc_r_begin_pass(pd);\n",
+              "    { id<MTLTexture> c0 = pd.colorAttachments[0].texture, dt = pd.depthAttachment.texture;   // DM_STORE_REPORT: the same targets as the pass just ended?\n"
+              "      uintptr_t key = (uintptr_t)(__bridge void *)(c0.parentTexture ?: c0) * 31u ^ (uintptr_t)(__bridge void *)(dt.parentTexture ?: dt) ^ (uintptr_t)pd.colorAttachments[0].level << 4 ^ (uintptr_t)pd.colorAttachments[0].slice << 8;\n"
+              "      if (key && key == g_pb_prev_key && g_pb_end_line > 0 && g_pb_end_line < 16384) g_pb_same[g_pb_end_line]++;\n"
+              "      g_pb_prev_key = key; }\n"
+              "    g_enc = enc_r_begin_pass(pd);\n")
+          rep("    memset(g_sr_b, 0, sizeof g_sr_b); g_sr_db = g_sr_mlb = 0; g_sr_ntop = 0;\n",
+              "    { uint64_t ends = 0, same = 0; for (int l = 0; l < 16384; l++) { ends += g_pb_end[l]; same += g_pb_same[l]; }\n"
+              "      MLOG(\"store report pass ends per frame: %llu, %llu of them followed by a pass on the same targets (a store and reload a merge would save)\", (unsigned long long)(ends / nf), (unsigned long long)(same / nf));\n"
+              "      for (int r = 0; r < 12; r++) { int m = -1; for (int l = 1; l < 16384; l++) if (g_pb_end[l] && (m < 0 || g_pb_same[l] > g_pb_same[m] || (g_pb_same[l] == g_pb_same[m] && g_pb_end[l] > g_pb_end[m]))) m = l;\n"
+              "          if (m < 0) break;\n"
+              "          MLOG(\"store report pass end at nvn_mtl.m line %d: %llu per frame, %llu of them then reopened the same targets\", m, (unsigned long long)(g_pb_end[m] / nf), (unsigned long long)(g_pb_same[m] / nf));\n"
+              "          g_pb_end[m] = 0; g_pb_same[m] = 0; }\n"
+              "      memset(g_pb_end, 0, sizeof g_pb_end); memset(g_pb_same, 0, sizeof g_pb_same); }\n"
+              "    memset(g_sr_b, 0, sizeof g_sr_b); g_sr_db = g_sr_mlb = 0; g_sr_ntop = 0;\n")
+          p.write_text(s); print("pass break report patched")
+          PYA
+
       - name: Fetch recorded data (optional)
         env:
           REC_URL: ${{ secrets.REC_URL }}
