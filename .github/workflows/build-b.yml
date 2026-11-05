@@ -111,6 +111,17 @@ jobs:
           open(p, 'w').write(s); print("wrapped the iOS 27-only line")
           PY
           fi
+          if [ "${SDK%%.*}" -lt 27 ]; then
+            python - "$RUNNER_TEMP/nx/dm/gfx/nvn/nvn_mtl.m" <<'PY'
+          import sys
+          p = sys.argv[1]; L = open(p).read().split('\n')
+          i = next(k for k, l in enumerate(L) if 'if (@available(macOS 27.0, iOS 27.0, *)) {   // the rectangles' in l)
+          j = next(k for k in range(i + 1, i + 12) if L[k].strip() == '}')
+          assert 'outputOffsetX' in L[j - 1], L[j - 1]
+          L.insert(j + 1, '#endif'); L.insert(i, '#if defined(__IPHONE_27_0)')
+          open(p, 'w').write('\n'.join(L)); print(f"guarded the MetalFX offsets block (lines {i+1}-{j+1}) for the older SDK")
+          PY
+          fi
 
       - name: Download your game files
         env:
@@ -163,7 +174,7 @@ jobs:
                     -o "$RUNNER_TEMP/out/game.ipa" --progress lines $EXTRA "$@" >> "$RUNNER_TEMP/build.log" 2>&1; }
           mkdir -p "$RUNNER_TEMP/out"
           if [ -n "$GPU" ]; then run --gpu "$GPU"; S=$?; else run; S=$?; fi
-          if [ $S -ne 0 ] && [ -n "$GPU" ]; then
+          if [ $S -ne 0 ] && [ -n "$GPU" ] && ! grep -q "FAIL: xcodebuild" "$RUNNER_TEMP/build.log"; then
             echo "::warning::build with --gpu $GPU failed ($S); retrying with the default pipeline archive"
             echo "===== retry without --gpu =====" >> "$RUNNER_TEMP/build.log"
             run; S=$?
