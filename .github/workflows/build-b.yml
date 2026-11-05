@@ -66,8 +66,6 @@ jobs:
           [ -n "$X" ] || X=/Applications/Xcode.app
           sudo xcode-select -s "$X"
           xcodebuild -version
-          # drop the other Xcodes for disk space
-          for o in /Applications/Xcode_*.app; do [ "$o" = "$X" ] || sudo rm -rf "$o"; done
           V="$(xcodebuild -version | head -1 | awk '{print $2}')"
           echo "XCODE_VER=$V" >> "$GITHUB_ENV"
           sw_vers; df -h / | tail -1
