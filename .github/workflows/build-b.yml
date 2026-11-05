@@ -123,7 +123,7 @@ jobs:
           n=0
           for U in "$BASE_URL" "$UPDATE_URL"; do
             n=$((n+1)); mkdir -p "$D/$n"
-            gdown --fuzzy "$U" -O "$D/$n/" 2>&1 | grep -v -i "^From:\|^To:" || true
+            gdown "$U" -O "$D/$n/" 2>&1 | grep -v -i "^From:\|^To:" || true
             F="$(find "$D/$n" -type f -print -quit)"
             [ -s "${F:-}" ] || { echo "::error::Download $n failed (is the Drive link shared as 'Anyone with the link'?)"; exit 1; }
             L="$(printf '%s' "$F" | tr '[:upper:]' '[:lower:]')"
@@ -178,7 +178,7 @@ jobs:
         env:
           PW: ${{ secrets.ARTIFACT_PASSWORD }}
         run: |
-          set -uo pipefail
+          set +e -uo pipefail
           [ -n "${PW:-}" ] || { echo "::error::Add the ARTIFACT_PASSWORD secret"; exit 1; }
           S="$RUNNER_TEMP/stage"; mkdir -p "$S"
           cp "$RUNNER_TEMP/build.log" "$S/" 2>/dev/null
