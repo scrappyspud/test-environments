@@ -1,0 +1,222 @@
+name: build-b
+
+# Packs a Switch 1 game you own (base + update from your Google Drive, plus your own prod.keys)
+# into an unsigned IPA with the upstream packer. Everything uploaded is encrypted.
+#
+# Secrets (Settings -> Secrets and variables -> Actions):
+#   B_BASE_URL          Google Drive share link of the base game file (.nsp/.xci/.nsz/.xcz, or a .zip/.rar/.7z holding it)
+#   B_UPDATE_URL        Google Drive share link of the update file (same formats)
+#   PROD_KEYS           the full text of your prod.keys
+#   ARTIFACT_PASSWORD   password for the encrypted results (already set for the other workflow)
+
+on:
+  workflow_dispatch:
+    inputs:
+      src_commit:
+        description: "Upstream commit to build from (blank = newest)"
+        required: false
+        type: string
+        default: ""
+      romfs_mode:
+        description: "separate = small IPA + game data file you copy into the app's folder (recommended); bundle = one ~15 GB IPA"
+        required: true
+        type: choice
+        options: [separate, bundle]
+        default: separate
+      gpu:
+        description: "Pipeline archive GPU (g13g = M1). Blank = upstream default. Falls back to the default if it fails."
+        required: false
+        type: string
+        default: "g13g"
+      allow_other_metal:
+        description: "Allow a Metal compiler other than Xcode 27.2 if the runner lacks it (shaders may render wrong)"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 360
+
+    steps:
+      - name: Log scrubber
+        run: |
+          mkdir -p "$HOME/bin"
+          printf '%s\n' '#!/bin/sh' "exec sed -E 's/[Zz][Ee][Ll][Dd][Aa]/app/g; s/[Bb]reath[^ ]*/app/g; s/[Ww]ild/app/g; s/[Bb][Oo][Tt][Ww]/app/g; s/[Uu][Kk][Ii][Nn][Gg]/app/g; s/[Hh]yrule/app/g; s/0[0-9A-Fa-f]{15}/TID/g'" > "$HOME/bin/scrub"
+          chmod +x "$HOME/bin/scrub"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Free disk space
+        run: |
+          df -h / | tail -1
+          sudo rm -rf "$ANDROID_HOME" /usr/local/share/dotnet /Users/runner/Library/Android 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator/Caches 2>/dev/null || true
+          xcrun simctl delete all 2>/dev/null || true
+          df -h / | tail -1
+
+      - name: Select the newest Xcode
+        run: |
+          set -euo pipefail
+          ls -d /Applications/Xcode*.app
+          X="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sed -E 's/.*Xcode_([0-9.]+)[^/]*\.app/\1 &/' | sort -V | tail -1 | cut -d' ' -f2-)"
+          [ -n "$X" ] || X=/Applications/Xcode.app
+          sudo xcode-select -s "$X"
+          xcodebuild -version
+          # drop the other Xcodes for disk space
+          for o in /Applications/Xcode_*.app; do [ "$o" = "$X" ] || sudo rm -rf "$o"; done
+          V="$(xcodebuild -version | head -1 | awk '{print $2}')"
+          echo "XCODE_VER=$V" >> "$GITHUB_ENV"
+          sw_vers; df -h / | tail -1
+
+      - name: Fetch the packer
+        env:
+          SRC_COMMIT: ${{ inputs.src_commit }}
+        run: |
+          set -euo pipefail
+          git clone -q https://github.com/seedds/nxnative.git "$RUNNER_TEMP/nx"
+          [ -n "$SRC_COMMIT" ] && git -C "$RUNNER_TEMP/nx" checkout -q "$SRC_COMMIT"
+          git -C "$RUNNER_TEMP/nx" log -1 --format='packer commit %h (%cd)'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          brew install xcodegen zstd glslang unar sevenzip
+          python -m pip install --upgrade pip
+          python -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic gdown "backports.zstd; python_version < '3.14'"
+          xcodebuild -downloadComponent MetalToolchain || echo "::warning::Metal toolchain download failed"
+          xcodebuild -downloadPlatform iOS || echo "::warning::iOS platform download failed"
+
+      - name: Compatibility fix for an older iOS SDK
+        run: |
+          set -euo pipefail
+          F="$RUNNER_TEMP/nx/dm/ios/Sources/DmGamepad.m"
+          SDK="$(xcrun --sdk iphoneos --show-sdk-version)"; echo "iOS SDK $SDK"
+          if [ "${SDK%%.*}" -lt 27 ] && grep -q 'deviceMotionBody = body' "$F"; then
+            python - "$F" <<'PY'
+          import re, sys
+          p = sys.argv[1]; s = open(p).read()
+          i = s.index('    if (@available(iOS 27.0, *)) { g_motion.deviceMotionBody = body;')
+          j = s.index('\n', i)
+          s = s[:i] + '#if defined(__IPHONE_27_0)\n' + s[i:j+1] + '#endif\n' + s[j+1:]
+          open(p, 'w').write(s); print("wrapped the iOS 27-only line")
+          PY
+          fi
+
+      - name: Download your game files
+        env:
+          BASE_URL: ${{ secrets.B_BASE_URL }}
+          UPDATE_URL: ${{ secrets.B_UPDATE_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "${BASE_URL:-}" ] && [ -n "${UPDATE_URL:-}" ] || { echo "::error::Add the B_BASE_URL and B_UPDATE_URL secrets"; exit 1; }
+          G="$RUNNER_TEMP/work/game"; D="$RUNNER_TEMP/work/dl"; mkdir -p "$G" "$D"
+          n=0
+          for U in "$BASE_URL" "$UPDATE_URL"; do
+            n=$((n+1)); mkdir -p "$D/$n"
+            gdown --fuzzy "$U" -O "$D/$n/" 2>&1 | grep -v -i "^From:\|^To:" || true
+            F="$(find "$D/$n" -type f -print -quit)"
+            [ -s "${F:-}" ] || { echo "::error::Download $n failed (is the Drive link shared as 'Anyone with the link'?)"; exit 1; }
+            L="$(printf '%s' "$F" | tr '[:upper:]' '[:lower:]')"
+            case "$L" in
+              *.nsp|*.xci|*.nsz|*.xcz) mv "$F" "$G/" ;;
+              *) unar -q -o "$D/$n/x" "$F" && rm -f "$F"
+                 find "$D/$n/x" -type f \( -iname '*.nsp' -o -iname '*.xci' -o -iname '*.nsz' -o -iname '*.xcz' \) -exec mv {} "$G/" \; ;;
+            esac
+          done
+          rm -rf "$D"
+          echo "game files:"; ls -lh "$G" | awk 'NR>1{print $5, "file"}'
+          [ "$(ls "$G" | wc -l)" -ge 2 ] || { echo "::error::Expected 2 game files (base + update)"; exit 1; }
+          echo "GAME_DIR=$G" >> "$GITHUB_ENV"
+          df -h / | tail -1
+
+      - name: Write keys
+        env:
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+        run: |
+          set -euo pipefail
+          [ -n "${PROD_KEYS:-}" ] || { echo "::error::Add the PROD_KEYS secret"; exit 1; }
+          K="$RUNNER_TEMP/keys"; mkdir -p "$K"; printf '%s\n' "$PROD_KEYS" > "$K/prod.keys"; chmod 600 "$K/prod.keys"
+          grep -c '=' "$K/prod.keys" | sed 's/^/key lines: /'
+          echo "KEYS=$K/prod.keys" >> "$GITHUB_ENV"
+
+      - name: Build (about an hour)
+        working-directory: ${{ runner.temp }}/nx
+        env:
+          ROMFS_MODE: ${{ inputs.romfs_mode }}
+          GPU: ${{ inputs.gpu }}
+          ALLOW_OTHER: ${{ inputs.allow_other_metal }}
+        run: |
+          set +e
+          EXTRA=""
+          case "$XCODE_VER" in 27.2*) ;; *) [ "$ALLOW_OTHER" = "true" ] && EXTRA="--allow-other-metal" && echo "::warning::Xcode $XCODE_VER, not 27.2: building with --allow-other-metal";; esac
+          run() { python3 scripts/build_ipa_from_nsp.py "$GAME_DIR" -k "$KEYS" --romfs "$ROMFS_MODE" \
+                    -o "$RUNNER_TEMP/out/game.ipa" --progress lines $EXTRA "$@" >> "$RUNNER_TEMP/build.log" 2>&1; }
+          mkdir -p "$RUNNER_TEMP/out"
+          if [ -n "$GPU" ]; then run --gpu "$GPU"; S=$?; else run; S=$?; fi
+          if [ $S -ne 0 ] && [ -n "$GPU" ]; then
+            echo "::warning::build with --gpu $GPU failed ($S); retrying with the default pipeline archive"
+            echo "===== retry without --gpu =====" >> "$RUNNER_TEMP/build.log"
+            run; S=$?
+          fi
+          echo "build exit code: $S"
+          echo "--- last lines ---"; tail -n 50 "$RUNNER_TEMP/build.log" | scrub
+          ls -lh "$RUNNER_TEMP/out" 2>/dev/null
+          exit $S
+
+      - name: Collect and encrypt results
+        if: always()
+        env:
+          PW: ${{ secrets.ARTIFACT_PASSWORD }}
+        run: |
+          set -uo pipefail
+          [ -n "${PW:-}" ] || { echo "::error::Add the ARTIFACT_PASSWORD secret"; exit 1; }
+          S="$RUNNER_TEMP/stage"; mkdir -p "$S"
+          cp "$RUNNER_TEMP/build.log" "$S/" 2>/dev/null
+          cp "$RUNNER_TEMP"/out/*.ipa "$S/" 2>/dev/null
+          find "${GAME_DIR:-/nonexistent}" -maxdepth 3 -name 'survey*' -size -20M -exec cp {} "$S/" \; 2>/dev/null
+          ls -lh "$S"
+          7zz a -p"$PW" -mhe=on -mx=1 "$RUNNER_TEMP/results.7z" "$S/." >/dev/null
+          R="$(find "${GAME_DIR:-/nonexistent}" -path '*/extract/*' -name 'RomFS.img' -print -quit 2>/dev/null)"
+          if [ "${{ inputs.romfs_mode }}" = "separate" ] && [ -n "$R" ]; then
+            ls -lh "$R"
+            # stored, not compressed (the image is already packed); 1.9 GB volumes for easier downloads
+            7zz a -p"$PW" -mhe=on -mx=0 -v1900m "$RUNNER_TEMP/data.7z" "$R" >/dev/null
+            ls -lh "$RUNNER_TEMP"/data.7z.*
+          fi
+          rm -rf "$RUNNER_TEMP/keys"
+          df -h / | tail -1
+
+      - name: Upload results (encrypted)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: b-results
+          path: ${{ runner.temp }}/results.7z
+          compression-level: 0
+          retention-days: 3
+
+      - name: Upload game data (encrypted)
+        if: ${{ inputs.romfs_mode == 'separate' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: b-data
+          path: ${{ runner.temp }}/data.7z.*
+          compression-level: 0
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/work" "$RUNNER_TEMP/stage" "$RUNNER_TEMP/keys" "$RUNNER_TEMP"/*.7z*
