@@ -39,6 +39,11 @@ on:
         required: false
         type: boolean
         default: false
+      heat_scale:
+        description: "Add the heat-adaptive render scale (DM_HEAT_SCALE in env.txt)"
+        required: false
+        type: boolean
+        default: false
       allow_other_metal:
         description: "Allow a Metal compiler other than Xcode 27.2 if the runner lacks it (shaders may render wrong)"
         required: true
@@ -106,6 +111,16 @@ jobs:
           python -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic gdown "backports.zstd; python_version < '3.14'"
           xcodebuild -downloadComponent MetalToolchain || echo "::warning::Metal toolchain download failed"
           xcodebuild -downloadPlatform iOS || echo "::warning::iOS platform download failed"
+
+      - name: Fetch our patch scripts
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/tools
+          path: self
+
+      - name: Heat-adaptive render scale
+        if: ${{ inputs.heat_scale }}
+        run: python3 self/.github/tools/heat.py "$RUNNER_TEMP/nx/dm/gfx/nvn/hle_nvn.c"
 
       - name: Tune for the device chip
         if: ${{ inputs.tune_m1 }}
