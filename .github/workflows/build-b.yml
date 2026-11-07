@@ -34,6 +34,11 @@ on:
         required: false
         type: string
         default: "g13g"
+      tune_m1:
+        description: "Compile the app's own code for the M1 (-mcpu=apple-m1) at -O3 instead of A18 / -Os"
+        required: false
+        type: boolean
+        default: false
       allow_other_metal:
         description: "Allow a Metal compiler other than Xcode 27.2 if the runner lacks it (shaders may render wrong)"
         required: true
@@ -101,6 +106,21 @@ jobs:
           python -m pip install lz4 "capstone>=5,<6" fonttools nsz zbic gdown "backports.zstd; python_version < '3.14'"
           xcodebuild -downloadComponent MetalToolchain || echo "::warning::Metal toolchain download failed"
           xcodebuild -downloadPlatform iOS || echo "::warning::iOS platform download failed"
+
+      - name: Tune for the device chip
+        if: ${{ inputs.tune_m1 }}
+        run: |
+          set -euo pipefail
+          python3 - "$RUNNER_TEMP/nx/dm/ios/project.yml" <<'PY2'
+          import sys, re
+          p = sys.argv[1]; s = open(p).read()
+          assert '-mcpu=apple-a18' in s, 'mcpu line moved upstream'
+          s = s.replace('-mcpu=apple-a18', '-mcpu=apple-m1')
+          s = re.sub(r'(\n(\s+)OTHER_CFLAGS:[^\n]*\n)', lambda m: m.group(1) + m.group(2) + 'GCC_OPTIMIZATION_LEVEL: "3"\n', s, count=1)
+          assert 'GCC_OPTIMIZATION_LEVEL: "3"' in s
+          open(p, 'w').write(s); print('tuned: -mcpu=apple-m1, -O3')
+          PY2
+          grep -nE "mcpu|GCC_OPTIMIZATION_LEVEL" "$RUNNER_TEMP/nx/dm/ios/project.yml"
 
       - name: Compatibility fix for an older iOS SDK
         run: |
