@@ -16,7 +16,7 @@ on:
         description: "Build machine image"
         required: false
         type: choice
-        options: [macos-26, macos-27]
+        options: [macos-26, xcode-27]
         default: macos-26
       src_commit:
         description: "Upstream commit to build from (blank = newest)"
