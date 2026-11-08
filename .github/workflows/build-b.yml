@@ -40,7 +40,7 @@ on:
         type: boolean
         default: false
       heat_scale:
-        description: "Add the heat-adaptive render scale (DM_HEAT_SCALE in env.txt)"
+        description: "Add host render scale control (DM_HEAT_SCALE, DM_DYN_SCALE in env.txt)"
         required: false
         type: boolean
         default: false
