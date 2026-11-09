@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# nv_fg.py <nvn_mtl.m>: hooks frame generation (fg_mtl.m, built in with FG_EMBEDDED) into the display-link present path.
+# With DM_FG=1 in env.txt and a game frame step of 30 fps or slower (pq item period > 25 ms), the tick that takes a new
+# frame N shows the generated frame between N-1 and N, and the next tick (one the present interval would otherwise hold)
+# shows N itself: 60 pictures a second from 30 game frames, one refresh (16.7 ms) later than without.
+# Ordering: the Metal 4 queue signals an event after the frame's rendering, a classic queue waits for it, copies the frame
+# in, runs the chain and signals again, and the Metal 4 queue waits for that before the present that samples the output.
+import sys
+p = sys.argv[1]; s = open(p).read()
+
+def once(old, new):
+    global s
+    assert s.count(old) == 1, 'anchor moved upstream: ' + old[:80]
+    s = s.replace(old, new, 1)
+
+# 1. The generator and its state, ahead of present_now (which takes the override)
+once('static double g_link_it_tin;', r'''#define FG_EMBEDDED 1
+#include "fg_mtl.m"
+static __strong id<MTLTexture> g_fg_override;   // present_now shows this instead of the frame's own texture (the generated picture)
+static fg_ctx *g_fg; static int g_fg_on = -1; static float g_fg_flow = 1.0f;
+static __strong id<MTLCommandQueue> g_fg_q; static __strong id<MTLSharedEvent> g_fg_ev; static uint64_t g_fg_v;
+static __strong id<MTLTexture> g_fg_ring[2]; static int g_fg_ri; static uint64_t g_fg_n;
+static double g_fg_gpu[300]; static int g_fg_gn; static pthread_mutex_t g_fg_mu = PTHREAD_MUTEX_INITIALIZER;
+// The generated frame between the previous frame given here and this one, or nil (off, first frames, unsupported picture)
+static id<MTLTexture> fg_make(const tex_t *t) {
+    if (g_fg_on < 0) {
+        const char *e = getenv("DM_FG"), *f = getenv("DM_FG_FLOW"); g_fg_on = e && atoi(e) > 0;
+        if (f) { float v = (float)atof(f); if (v >= 0.25f && v <= 1.0f) g_fg_flow = v; else MLOG("[RED] DM_FG_FLOW=%s: a flow scale from 0.25 to 1.0", f); }
+        if (g_fg_on) MLOG("frame generation (DM_FG): on while the frame step is 30 fps or slower, one generated picture between each pair of frames, flow scale %.2f (DM_FG_FLOW)", g_fg_flow);
+    }
+    if (!g_fg_on || !g_q4) return nil;
+    id<MTLTexture> src = tex_mtl(t); if (!src) return nil;
+    if (src.pixelFormat != MTLPixelFormatRGBA8Unorm) { MLOG("[RED] frame generation: the game's picture has format %lu, not RGBA8Unorm (70); off", (unsigned long)src.pixelFormat); g_fg_on = 0; return nil; }
+    if (!g_fg || g_fg_ring[0].width != src.width || g_fg_ring[0].height != src.height) {
+        fg_destroy(g_fg); g_fg = NULL; NSString *err = nil; uint64_t t0 = now_ns();
+        g_fg = fg_create(g_dev, nil, (uint32_t)src.width, (uint32_t)src.height, 1.0f / g_fg_flow, &err);
+        if (!g_fg) { MLOG("[RED] frame generation: %s; off", err.UTF8String); g_fg_on = 0; return nil; }
+        if (!g_fg_q) { g_fg_q = [g_dev newCommandQueue]; g_fg_ev = [g_dev newSharedEvent]; }
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:src.width height:src.height mipmapped:NO];
+        d.storageMode = MTLStorageModePrivate; d.usage = MTLTextureUsageShaderRead;
+        for (int i = 0; i < 2; i++) { g_fg_ring[i] = [g_dev newTextureWithDescriptor:d]; g_fg_ring[i].label = @"generated frame"; res_add(g_fg_ring[i]); }
+        res_commit(); g_fg_n = 0;
+        MLOG("frame generation: %lux%lu pictures, set up in %.1f ms", (unsigned long)src.width, (unsigned long)src.height, (now_ns() - t0) / 1e6);
+    }
+    uint64_t v = g_fg_v += 2;
+    [g_q4 signalEvent:g_fg_ev value:v - 1];   // after this frame's rendering on the Metal 4 queue
+    id<MTLCommandBuffer> cb = [g_fg_q commandBuffer]; cb.label = @"frame generation";
+    [cb encodeWaitForEvent:g_fg_ev value:v - 1];
+    id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
+    [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(src.width, src.height, 1)
+             toTexture:fg_source(g_fg) destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [b endEncoding];
+    fg_encode(g_fg, cb);
+    id<MTLTexture> out = g_fg_ring[g_fg_ri];
+    b = [cb blitCommandEncoder]; [b copyFromTexture:fg_output(g_fg) toTexture:out]; [b endEncoding];
+    [cb encodeSignalEvent:g_fg_ev value:v];
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
+        if (c.error) { MLOG("[RED] frame generation command buffer: %s", c.error.description.UTF8String); return; }
+        pthread_mutex_lock(&g_fg_mu); g_fg_gpu[g_fg_gn++] = (c.GPUEndTime - c.GPUStartTime) * 1e3;
+        if (g_fg_gn == 300) { double *a = g_fg_gpu; for (int i = 1; i < 300; i++) { double x = a[i]; int j = i - 1; while (j >= 0 && a[j] > x) { a[j + 1] = a[j]; j--; } a[j + 1] = x; }
+            MLOG("frame generation GPU time over 300 frames: p50 %.2f ms, p95 %.2f ms, max %.2f ms", a[149], a[284], a[299]); g_fg_gn = 0; }
+        pthread_mutex_unlock(&g_fg_mu); }];
+    [cb commit];
+    [g_q4 waitForEvent:g_fg_ev value:v];   // the present that samples the generated picture waits for it
+    if (++g_fg_n < 3) return nil;          // the chain keeps two to three frames of history: nothing to show until it has them
+    g_fg_ri ^= 1;
+    return out;
+}
+
+static double g_link_it_tin;''')
+
+# 2. present_now shows the override
+once('    id<MTLTexture> src = tex_mtl(t);\n    if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }',
+     '    id<MTLTexture> src = g_fg_override ? g_fg_override : tex_mtl(t);\n    if (!src) { RED_ONCE(8, "present texture could not get an MTLTexture"); return 0; }')
+
+# 3. The real frame waiting for the tick after its generated picture
+once('@interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>',
+     'static pq_item g_fg_pend; static uint64_t g_fg_pend_ticket; static int g_fg_pend_on;   // under g_pq_mu\n'
+     '@interface NvMetalDisplayLinkDelegate : NSObject <CAMetalDisplayLinkDelegate>')
+
+# 4. A held tick shows the waiting real frame
+once('    if (g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol) { g_link_held++; pthread_mutex_unlock(&g_pq_mu); return; }',
+     '''    if (g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol) {
+        if (g_fg_pend_on) {   // frame generation: the real frame after its generated picture
+            pq_item p = g_fg_pend; uint64_t pt = g_fg_pend_ticket; g_fg_pend_on = 0; pthread_mutex_unlock(&g_pq_mu);
+            @autoreleasepool { present_now(&p.t, p.period, p.frame, pt, p.crop, update.drawable, update.targetPresentationTimestamp); mtl_tex_unpin(p.t.serial); }
+            return;
+        }
+        g_link_held++; pthread_mutex_unlock(&g_pq_mu); return;
+    }''')
+
+# 5. A new frame at a 30 fps step: its generated picture first
+once('    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp); mtl_tex_unpin(it.t.serial); }',
+     '''    @autoreleasepool {
+        id<MTLTexture> gen = nil;
+        pthread_mutex_lock(&g_pq_mu); int pend = g_fg_pend_on; pthread_mutex_unlock(&g_pq_mu);
+        if (pend) {   // a real frame still waiting (its tick never came): show it now, in place of a generated picture
+            pthread_mutex_lock(&g_pq_mu); pq_item p = g_fg_pend; g_fg_pend_on = 0; pthread_mutex_unlock(&g_pq_mu); mtl_tex_unpin(p.t.serial);
+        }
+        if (it.period > 0.025) gen = fg_make(&it.t);
+        if (gen) {
+            g_fg_override = gen;
+            submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp);
+            g_fg_override = nil;
+            if (submitted) { pthread_mutex_lock(&g_pq_mu); g_fg_pend = it; g_fg_pend_ticket = ticket; g_fg_pend_on = 1; pthread_mutex_unlock(&g_pq_mu); }
+            else mtl_tex_unpin(it.t.serial);
+        } else { submitted = present_now(&it.t, it.period, it.frame, ticket, it.crop, update.drawable, update.targetPresentationTimestamp); mtl_tex_unpin(it.t.serial); }
+    }''')
+
+open(p, 'w').write(s)
+print('frame generation hooked into the display-link present')

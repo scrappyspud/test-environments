@@ -44,6 +44,11 @@ on:
         required: false
         type: boolean
         default: false
+      fg:
+        description: "Build in frame generation (DM_FG=1 in env.txt; needs the C_URL secret)"
+        required: false
+        type: boolean
+        default: false
       allow_other_metal:
         description: "Allow a Metal compiler other than Xcode 27.2 if the runner lacks it (shaders may render wrong)"
         required: true
@@ -121,6 +126,27 @@ jobs:
       - name: Heat-adaptive render scale
         if: ${{ inputs.heat_scale }}
         run: python3 self/.github/tools/heat.py "$RUNNER_TEMP/nx/dm/gfx/nvn/hle_nvn.c"
+
+      - name: Frame generation
+        if: ${{ inputs.fg }}
+        env:
+          C_URL: ${{ secrets.C_URL }}
+        run: |
+          set -euo pipefail
+          brew install spirv-cross >/dev/null
+          python3 -m pip install --break-system-packages -q pefile gdown
+          F="$RUNNER_TEMP/fgw"; mkdir -p "$F/ios"
+          gdown -q "$C_URL" -O "$F/in.bin" >/dev/null 2>&1 || gdown -q --fuzzy "$C_URL" -O "$F/in.bin" >/dev/null 2>&1
+          python3 self/.github/tools/fg/prep.py "$F/in.bin" "$F/msl"
+          for f in "$F"/msl/*.metal; do r=$(basename "$f" .metal)
+            xcrun -sdk iphoneos metal -mios-version-min=26.0 -c "$f" -o "$F/ios/$r.air" 2>/dev/null && xcrun -sdk iphoneos metallib "$F/ios/$r.air" -o "$F/ios/$r.metallib" || { echo "::error::shader $r did not compile"; exit 1; }
+          done
+          cp "$F/msl/manifest.json" "$F/ios/"
+          N="$RUNNER_TEMP/nx/dm/gfx/nvn"
+          python3 self/.github/tools/fg/gen_blob.py "$F/ios" "$N/fg_blob.h"
+          cp self/.github/tools/fg/fg_mtl.m self/.github/tools/fg/fg_mtl.h "$N/"
+          python3 self/.github/tools/fg/nv_fg.py "$N/nvn_mtl.m"
+          rm -rf "$F"
 
       - name: Tune for the device chip
         if: ${{ inputs.tune_m1 }}

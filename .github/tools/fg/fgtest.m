@@ -45,7 +45,7 @@ int main(int argc, char **argv) {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         printf("device: %s\n", dev.name.UTF8String);
         NSString *err = nil;
-        fg_ctx *c = fg_create(dev, @(argv[1]), W, H, 1.0f / flowScale, &err);
+        fg_ctx *c = fg_create(dev, strcmp(argv[1], "-") ? @(argv[1]) : nil, W, H, 1.0f / flowScale, &err);
         if (!c) { printf("FAIL create: %s\n", err.UTF8String); return 1; }
         id<MTLCommandQueue> q = [dev newCommandQueue];
         size_t sz = 4 * W * H; uint8_t *frame = malloc(sz), *prev = malloc(sz), *out = malloc(sz);

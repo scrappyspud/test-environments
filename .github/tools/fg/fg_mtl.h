@@ -10,7 +10,7 @@
 
 typedef struct fg_ctx fg_ctx;
 
-fg_ctx *fg_create(id<MTLDevice> dev, NSString *shaderDir, uint32_t width, uint32_t height, float flow, NSString **err);
+fg_ctx *fg_create(id<MTLDevice> dev, NSString *shaderDir /* nil: the shaders built in (FG_EMBEDDED) */, uint32_t width, uint32_t height, float flow, NSString **err);
 id<MTLTexture> fg_source(fg_ctx *c);    // RGBA8Unorm, width x height: write the newest real frame here before fg_encode
 id<MTLTexture> fg_output(fg_ctx *c);    // RGBA8Unorm: the generated frame after fg_encode's work completes
 void fg_encode(fg_ctx *c, id<MTLCommandBuffer> cb);

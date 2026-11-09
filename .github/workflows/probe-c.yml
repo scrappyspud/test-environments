@@ -44,7 +44,8 @@ jobs:
           cd "$RUNNER_TEMP/c/msl"; mkdir -p ../mac ../ios; fail=0
           for f in *.metal; do r=${f%.metal}
             for p in macosx:mac iphoneos:ios; do sdk=${p%%:*}; d=../${p##*:}
-              if xcrun -sdk $sdk metal -c "$f" -o "$d/$r.air" 2>"$d/$r.err" && xcrun -sdk $sdk metallib "$d/$r.air" -o "$d/$r.metallib" 2>>"$d/$r.err"; then :; else
+              min=-mmacosx-version-min=14.0; [ $sdk = iphoneos ] && min=-mios-version-min=26.0
+              if xcrun -sdk $sdk metal $min -c "$f" -o "$d/$r.air" 2>"$d/$r.err" && xcrun -sdk $sdk metallib "$d/$r.air" -o "$d/$r.metallib" 2>>"$d/$r.err"; then :; else
                 fail=1; echo "FAIL $r ($sdk): $(grep -m3 -o 'error: .*' "$d/$r.err" | tr '\n' ' ')"; fi
             done
           done
@@ -59,6 +60,11 @@ jobs:
             -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics
           mkdir -p out
           "$RUNNER_TEMP/c/fgtest" "$RUNNER_TEMP/c/mac" out 1280 896 "${{ inputs.flow_scale }}"
+          echo "--- built-in shaders (the app's path)"
+          python3 .github/tools/fg/gen_blob.py "$RUNNER_TEMP/c/mac" "$RUNNER_TEMP/c/fg_blob.h"
+          clang -fobjc-arc -O2 -DFG_EMBEDDED -I"$RUNNER_TEMP/c" .github/tools/fg/fgtest.m .github/tools/fg/fg_mtl.m -o "$RUNNER_TEMP/c/fgtest2" \
+            -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics
+          mkdir -p out2; "$RUNNER_TEMP/c/fgtest2" - out2 1280 896 "${{ inputs.flow_scale }}" | tail -2
 
       - name: Upload the test pictures
         if: always()
