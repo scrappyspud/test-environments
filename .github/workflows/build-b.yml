@@ -248,6 +248,11 @@ jobs:
           fi
           echo "build exit code: $S"
           echo "--- last lines ---"; tail -n 50 "$RUNNER_TEMP/build.log" | scrub
+          if grep -q "FAIL: xcodebuild" "$RUNNER_TEMP/build.log"; then
+            echo "--- compiler and linker errors ---"
+            find "$RUNNER_TEMP/work" -path "*pkg/build.log" -exec grep -hE -A3 "Undefined symbol|duplicate symbol|ld: |error: |warning: .*(ld|linker)" {} + 2>/dev/null \
+              | sed -E 's#/Users/runner/[^ :]*/##g' | cut -c1-300 | head -n 80 | scrub
+          fi
           ls -lh "$RUNNER_TEMP/out" 2>/dev/null
           exit $S
 
