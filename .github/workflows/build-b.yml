@@ -201,7 +201,7 @@ jobs:
           n=0
           for U in "$BASE_URL" "$UPDATE_URL"; do
             n=$((n+1)); mkdir -p "$D/$n"
-            gdown "$U" -O "$D/$n/" 2>&1 | grep -v -i "^From:\|^To:" || true
+            gdown -q "$U" -O "$D/$n/" >/dev/null 2>&1 || echo "download $n: retrying with --fuzzy"; [ -n "$(ls -A "$D/$n")" ] || gdown -q --fuzzy "$U" -O "$D/$n/" >/dev/null 2>&1 || true
             F="$(find "$D/$n" -type f -print -quit)"
             [ -s "${F:-}" ] || { echo "::error::Download $n failed (is the Drive link shared as 'Anyone with the link'?)"; exit 1; }
             L="$(printf '%s' "$F" | tr '[:upper:]' '[:lower:]')"
