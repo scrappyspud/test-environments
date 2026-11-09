@@ -22,6 +22,29 @@ static fg_ctx *g_fg; static int g_fg_on = -1; static float g_fg_flow = 1.0f;
 static __strong id<MTLCommandQueue> g_fg_q; static __strong id<MTLSharedEvent> g_fg_ev; static uint64_t g_fg_v;
 static __strong id<MTLTexture> g_fg_ring[2]; static int g_fg_ri; static uint64_t g_fg_n;
 static double g_fg_gpu[300]; static int g_fg_gn; static pthread_mutex_t g_fg_mu = PTHREAD_MUTEX_INITIALIZER;
+// A check that the generated pictures really sit between the real ones: 64x48 luma samples of each real frame and each generated
+// picture, compared on the CPU when the command buffer completes; logged every 300 generated pictures
+static __strong id<MTLComputePipelineState> g_fgp_ps; static __strong id<MTLBuffer> g_fgp_prev; static int g_fgp_bad;
+static double g_fgp_gp, g_fgp_gn, g_fgp_pn; static int g_fgp_n;
+static id<MTLBuffer> fgp_sample(id<MTLCommandBuffer> cb, id<MTLTexture> t, NSUInteger x, NSUInteger y, NSUInteger w, NSUInteger h) {
+    if (!g_fgp_ps && !g_fgp_bad) {
+        NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
+            "kernel void fgp(texture2d<float, access::read> t [[texture(0)]], device float *o [[buffer(0)]], constant uint4 &r [[buffer(1)]], uint2 g [[thread_position_in_grid]]) {\n"
+            "  if (g.x >= 64 || g.y >= 48) return; uint x = r.x + (g.x * 2 + 1) * r.z / 128, y = r.y + (g.y * 2 + 1) * r.w / 96;\n"
+            "  float4 c = t.read(uint2(x, y)); o[g.y * 64 + g.x] = dot(c.rgb, float3(0.299, 0.587, 0.114)) * 255.0; }\n";
+        NSError *e = nil; id<MTLLibrary> l = [g_dev newLibraryWithSource:src options:nil error:&e];
+        id<MTLFunction> f = [l newFunctionWithName:@"fgp"]; g_fgp_ps = f ? [g_dev newComputePipelineStateWithFunction:f error:&e] : nil;
+        if (!g_fgp_ps) { g_fgp_bad = 1; MLOG("[RED] frame generation check: %s", e.description.UTF8String); return nil; }
+    }
+    if (!g_fgp_ps) return nil;
+    id<MTLBuffer> o = [g_dev newBufferWithLength:64 * 48 * sizeof(float) options:MTLResourceStorageModeShared];
+    uint32_t r[4] = {(uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h};
+    id<MTLComputeCommandEncoder> c = [cb computeCommandEncoder]; [c setComputePipelineState:g_fgp_ps];
+    [c setTexture:t atIndex:0]; [c setBuffer:o offset:0 atIndex:0]; [c setBytes:r length:sizeof r atIndex:1];
+    [c dispatchThreads:MTLSizeMake(64, 48, 1) threadsPerThreadgroup:MTLSizeMake(16, 16, 1)]; [c endEncoding];
+    return o;
+}
+static double fgp_mad(const float *a, const float *b) { double s = 0; for (int i = 0; i < 64 * 48; i++) s += fabsf(a[i] - b[i]); return s / (64 * 48); }
 static double g_fg_ema = 33.3; static uint64_t g_fg_last; static int g_fg_paused;
 // The generated frame between the previous frame given here and this one, or nil (off, first frames, unsupported picture, paused).
 // Only the part of the picture the game shows (its crop) goes through the chain; the generated picture is that part alone, and
@@ -63,13 +86,24 @@ static id<MTLTexture> fg_make(const tex_t *t, const int crop[4], int out_crop[4]
     [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(cx, cy, 0) sourceSize:MTLSizeMake(cw, ch, 1)
              toTexture:fg_source(g_fg) destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     [b endEncoding];
+    id<MTLBuffer> pn = fgp_sample(cb, src, cx, cy, cw, ch);
     fg_encode(g_fg, cb);
     id<MTLTexture> out = g_fg_ring[g_fg_ri];
     b = [cb blitCommandEncoder]; [b copyFromTexture:fg_output(g_fg) toTexture:out]; [b endEncoding];
+    id<MTLBuffer> pg = pn ? fgp_sample(cb, out, 0, 0, cw, ch) : nil, pp = g_fgp_prev; g_fgp_prev = pn;
+    int check = g_fg_n >= 2;   // the picture made from two real frames
     [cb encodeSignalEvent:g_fg_ev value:v];
     [cb addCompletedHandler:^(id<MTLCommandBuffer> c) {
         if (c.error) { MLOG("[RED] frame generation command buffer: %s", c.error.description.UTF8String); return; }
-        pthread_mutex_lock(&g_fg_mu); g_fg_gpu[g_fg_gn++] = (c.GPUEndTime - c.GPUStartTime) * 1e3;
+        pthread_mutex_lock(&g_fg_mu);
+        if (check && pp && pn && pg) {
+            const float *P = pp.contents, *N = pn.contents, *G = pg.contents;
+            g_fgp_gp += fgp_mad(G, P); g_fgp_gn += fgp_mad(G, N); g_fgp_pn += fgp_mad(P, N);
+            if (++g_fgp_n == 300) {
+                MLOG("frame generation check over 300 pictures (mean luma change, 0-255): generated vs previous real %.2f, vs next real %.2f, previous vs next %.2f "
+                     "(in between: both about half the last; a copy of one frame: one near 0)", g_fgp_gp / 300, g_fgp_gn / 300, g_fgp_pn / 300);
+                g_fgp_gp = g_fgp_gn = g_fgp_pn = 0; g_fgp_n = 0; }
+        } g_fg_gpu[g_fg_gn++] = (c.GPUEndTime - c.GPUStartTime) * 1e3;
         if (g_fg_gn == 300) { double *a = g_fg_gpu; for (int i = 1; i < 300; i++) { double x = a[i]; int j = i - 1; while (j >= 0 && a[j] > x) { a[j + 1] = a[j]; j--; } a[j + 1] = x; }
             MLOG("frame generation GPU time over 300 frames: p50 %.2f ms, p95 %.2f ms, max %.2f ms", a[149], a[284], a[299]); g_fg_gn = 0; }
         pthread_mutex_unlock(&g_fg_mu); }];
