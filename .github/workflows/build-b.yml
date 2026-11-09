@@ -155,8 +155,8 @@ jobs:
           python3 - "$RUNNER_TEMP/nx/dm/ios/project.yml" <<'PY2'
           import sys, re
           p = sys.argv[1]; s = open(p).read()
-          assert '-mcpu=apple-a18' in s, 'mcpu line moved upstream'
-          s = s.replace('-mcpu=apple-a18', '-mcpu=apple-m1')
+          assert '-mcpu=apple-a18' in s or '-mcpu=apple-m1' in s, 'mcpu line moved upstream'
+          s = s.replace('-mcpu=apple-a18', '-mcpu=apple-m1')   # upstream targets the M1 itself since 2a6f9b3
           s = re.sub(r'(\n(\s+)OTHER_CFLAGS:[^\n]*\n)', lambda m: m.group(1) + m.group(2) + 'GCC_OPTIMIZATION_LEVEL: "3"\n', s, count=1)
           assert 'GCC_OPTIMIZATION_LEVEL: "3"' in s
           open(p, 'w').write(s); print('tuned: -mcpu=apple-m1, -O3')
