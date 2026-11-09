@@ -144,7 +144,7 @@ jobs:
           cp "$F/msl/manifest.json" "$F/ios/"
           N="$RUNNER_TEMP/nx/dm/gfx/nvn"
           python3 self/.github/tools/fg/gen_blob.py "$F/ios" "$N/fg_blob.h"
-          cp self/.github/tools/fg/fg_mtl.m self/.github/tools/fg/fg_mtl.h "$N/"
+          cp self/.github/tools/fg/fg_mtl.m "$N/fg_mtl.inc"; cp self/.github/tools/fg/fg_mtl.h "$N/"   # .inc: the build compiles every .m in this folder on its own, and nvn_mtl.m includes this one
           python3 self/.github/tools/fg/nv_fg.py "$N/nvn_mtl.m"
           rm -rf "$F"
 

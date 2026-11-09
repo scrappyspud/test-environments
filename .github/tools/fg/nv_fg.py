@@ -16,7 +16,7 @@ def once(old, new):
 
 # 1. The generator and its state, ahead of present_now (which takes the override)
 once('static double g_link_it_tin;', r'''#define FG_EMBEDDED 1
-#include "fg_mtl.m"
+#include "fg_mtl.inc"
 static __strong id<MTLTexture> g_fg_override;   // present_now shows this instead of the frame's own texture (the generated picture)
 static fg_ctx *g_fg; static int g_fg_on = -1; static float g_fg_flow = 1.0f;
 static __strong id<MTLCommandQueue> g_fg_q; static __strong id<MTLSharedEvent> g_fg_ev; static uint64_t g_fg_v;
