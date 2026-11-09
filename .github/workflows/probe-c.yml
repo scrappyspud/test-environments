@@ -1,0 +1,73 @@
+name: probe-c
+
+on:
+  workflow_dispatch:
+    inputs:
+      flow_scale:
+        description: "Flow scale for the test (0.25 to 1.0)"
+        required: false
+        default: "1.0"
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/tools
+
+      - name: Tools
+        run: |
+          brew install spirv-cross >/dev/null
+          python3 -m pip install --break-system-packages -q pefile gdown
+          spirv-cross --revision | head -1 || true
+
+      - name: Fetch the source file
+        env:
+          C_URL: ${{ secrets.C_URL }}
+        run: |
+          set -euo pipefail
+          [ -n "$C_URL" ] || { echo "::error::secret C_URL is not set"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/c"
+          gdown -q "$C_URL" -O "$RUNNER_TEMP/c/in.bin" >/dev/null 2>&1 || gdown -q --fuzzy "$C_URL" -O "$RUNNER_TEMP/c/in.bin" >/dev/null 2>&1
+          ls -l "$RUNNER_TEMP/c/in.bin" | awk '{print "size", $5}'
+
+      - name: Convert the shaders
+        run: |
+          set -euo pipefail
+          python3 .github/tools/fg/prep.py "$RUNNER_TEMP/c/in.bin" "$RUNNER_TEMP/c/msl"
+
+      - name: Compile for macOS and iOS
+        run: |
+          set -uo pipefail
+          cd "$RUNNER_TEMP/c/msl"; mkdir -p ../mac ../ios; fail=0
+          for f in *.metal; do r=${f%.metal}
+            for p in macosx:mac iphoneos:ios; do sdk=${p%%:*}; d=../${p##*:}
+              if xcrun -sdk $sdk metal -c "$f" -o "$d/$r.air" 2>"$d/$r.err" && xcrun -sdk $sdk metallib "$d/$r.air" -o "$d/$r.metallib" 2>>"$d/$r.err"; then :; else
+                fail=1; echo "FAIL $r ($sdk): $(grep -m3 -o 'error: .*' "$d/$r.err" | tr '\n' ' ')"; fi
+            done
+          done
+          cp manifest.json ../mac/; cp manifest.json ../ios/
+          echo "metallibs: mac $(ls ../mac/*.metallib | wc -l), ios $(ls ../ios/*.metallib | wc -l)"
+          exit $fail
+
+      - name: Build and run the test
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -O2 -Wall -Wno-unused-variable .github/tools/fg/fgtest.m .github/tools/fg/fg_mtl.m -o "$RUNNER_TEMP/c/fgtest" \
+            -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics
+          mkdir -p out
+          "$RUNNER_TEMP/c/fgtest" "$RUNNER_TEMP/c/mac" out 1280 896 "${{ inputs.flow_scale }}"
+
+      - name: Upload the test pictures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: c-pictures
+          path: out/*.png
+          retention-days: 3
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/c"
