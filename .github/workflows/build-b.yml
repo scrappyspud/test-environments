@@ -201,7 +201,7 @@ jobs:
           n=0
           for U in "$BASE_URL" "$UPDATE_URL"; do
             n=$((n+1)); mkdir -p "$D/$n"
-            gdown -q "$U" -O "$D/$n/" >"$RUNNER_TEMP/dl.txt" 2>&1 || echo "download $n: retrying with --fuzzy"; [ -n "$(ls -A "$D/$n")" ] || gdown -q --fuzzy "$U" -O "$D/$n/" >>"$RUNNER_TEMP/dl.txt" 2>&1 || true
+            gdown "$U" -O "$D/$n/" >"$RUNNER_TEMP/dl.txt" 2>&1 || echo "download $n: retrying with --fuzzy"; [ -n "$(ls -A "$D/$n")" ] || gdown --fuzzy "$U" -O "$D/$n/" >>"$RUNNER_TEMP/dl.txt" 2>&1 || true
           [ -n "$(ls -A "$D/$n")" ] || { echo "download $n said (links hidden):"; sed -E 's#[a-z]+://[^ "]+#<link>#g; s/[A-Za-z0-9_-]{20,}/<id>/g' "$RUNNER_TEMP/dl.txt" | grep -v "^\s*$" | tail -n 6; }; rm -f "$RUNNER_TEMP/dl.txt"
             F="$(find "$D/$n" -type f -print -quit)"
             [ -s "${F:-}" ] || { echo "::error::Download $n failed (is the Drive link shared as 'Anyone with the link'?)"; exit 1; }
