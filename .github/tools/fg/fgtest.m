@@ -1,7 +1,7 @@
 // Test for fg_mtl on a Mac: synthetic frames (a textured background, a static HUD bar, a red disc moving 40 px a frame),
 // fed one by one; after each frame the generated frame should show the disc halfway between the last two positions.
 // Prints the disc's centroid in each generated frame and the GPU time per frame; writes PNGs of the last pair and output.
-// fgtest <shader dir> <out dir> [width height flow_scale]
+// fgtest <shader dir> <out dir> [width height flow_scale [mode: 1 quality, 2 two pictures per pair, 3 both]]
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <ImageIO/ImageIO.h>
@@ -45,7 +45,10 @@ int main(int argc, char **argv) {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         printf("device: %s\n", dev.name.UTF8String);
         NSString *err = nil;
-        fg_ctx *c = fg_create(dev, strcmp(argv[1], "-") ? @(argv[1]) : nil, W, H, 1.0f / flowScale, &err);
+        int quality = argc >= 7 && atoi(argv[6]) & 1, two = argc >= 7 && atoi(argv[6]) & 2;   // 7th argument: 1 quality chain, 2 two pictures per pair, 3 both
+        printf("%s chain, %s\n", quality ? "quality" : "performance", two ? "two pictures per pair" : "one picture per pair");
+        fg_ctx *c = fg_create(dev, strcmp(argv[1], "-") ? @(argv[1]) : nil, W, H, 1.0f / flowScale, quality, &err);
+        id<MTLBuffer> rb2 = [dev newBufferWithLength:4 * W * H options:MTLResourceStorageModeShared];
         if (!c) { printf("FAIL create: %s\n", err.UTF8String); return 1; }
         id<MTLCommandQueue> q = [dev newCommandQueue];
         size_t sz = 4 * W * H; uint8_t *frame = malloc(sz), *prev = malloc(sz), *out = malloc(sz);
@@ -61,8 +64,10 @@ int main(int argc, char **argv) {
             id<MTLCommandBuffer> cb = [q commandBuffer];
             id<MTLBlitCommandEncoder> b = [cb blitCommandEncoder];
             [b copyFromTexture:up toTexture:fg_source(c)]; [b endEncoding];
-            fg_encode(c, cb);
+            if (two) fg_encode_n(c, cb, 2); else fg_encode(c, cb);
             b = [cb blitCommandEncoder];
+            if (two) [b copyFromTexture:fg_output_n(c, 1) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1)
+                      toBuffer:rb2 destinationOffset:0 destinationBytesPerRow:4 * W destinationBytesPerImage:sz];
             [b copyFromTexture:fg_output(c) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(W, H, 1)
                       toBuffer:rb destinationOffset:0 destinationBytesPerRow:4 * W destinationBytesPerImage:sz];
             [b endEncoding];
@@ -72,14 +77,19 @@ int main(int argc, char **argv) {
             memcpy(out, rb.contents, sz);
             int n; double gx = centroid(out, &n);
             uint64_t sum = 0; for (size_t i = 0; i < sz; i += 4) sum += out[i] + out[i + 1] + out[i + 2];
+            double want = two ? cx - 40 + 40.0 / 3 : cx - 20;
             printf("frame %d: real disc at %.0f, generated disc at %.1f (%d px; expected %.0f), mean %.1f, GPU %.2f ms\n",
-                   t, cx, gx, n, cx - 20, sum / (3.0 * W * H), ms);
-            if (t >= 3) { gpuSum += ms; gpuN++; if (n < 2000 || fabs(gx - (cx - 20)) > 12) ok = 0; }
+                   t, cx, gx, n, want, sum / (3.0 * W * H), ms);
+            if (t >= 3) { gpuSum += ms; gpuN++; if (n < 2000 || fabs(gx - want) > 12) ok = 0; }
+            if (two) { int n2; double g2 = centroid(rb2.contents, &n2), want2 = cx - 40 + 80.0 / 3;
+                printf("         second picture: disc at %.1f (%d px; expected %.0f)\n", g2, n2, want2);
+                if (t >= 3 && (n2 < 2000 || fabs(g2 - want2) > 12)) ok = 0; }
             if (t == 6) { NSString *o = @(argv[2]);
                 png([o stringByAppendingPathComponent:@"a_prev.png"], prev); png([o stringByAppendingPathComponent:@"c_next.png"], frame);
                 png([o stringByAppendingPathComponent:@"b_generated.png"], out); }
         }
         printf("GPU per generated frame (incl. two blits): %.2f ms average over the last %d\n", gpuSum / gpuN, gpuN);
+        if (!ok) { printf("CHECK: the generated disc is not where expected (see PNGs)\n"); return 3; }
         printf(ok ? "PASS: the generated disc sits between the real ones\n" : "CHECK: the generated disc is not where expected (see PNGs)\n");
         fg_destroy(c);
         return 0;

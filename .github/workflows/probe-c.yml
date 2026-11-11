@@ -60,11 +60,14 @@ jobs:
             -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics
           mkdir -p out
           "$RUNNER_TEMP/c/fgtest" "$RUNNER_TEMP/c/mac" out 1280 896 "${{ inputs.flow_scale }}"
+          for m in 1 2 3; do echo "--- mode $m"; mkdir -p "out_m$m"; "$RUNNER_TEMP/c/fgtest" "$RUNNER_TEMP/c/mac" "out_m$m" 1280 896 "${{ inputs.flow_scale }}" $m | tail -6; done
+          cp out_m1/b_generated.png out/b_generated_quality.png
           echo "--- built-in shaders (the app's path)"
           python3 .github/tools/fg/gen_blob.py "$RUNNER_TEMP/c/mac" "$RUNNER_TEMP/c/fg_blob.h"
           clang -fobjc-arc -O2 -DFG_EMBEDDED -I"$RUNNER_TEMP/c" .github/tools/fg/fgtest.m .github/tools/fg/fg_mtl.m -o "$RUNNER_TEMP/c/fgtest2" \
             -framework Foundation -framework Metal -framework ImageIO -framework CoreGraphics
           mkdir -p out2; "$RUNNER_TEMP/c/fgtest2" - out2 1280 896 "${{ inputs.flow_scale }}" | tail -2
+          "$RUNNER_TEMP/c/fgtest2" - out2 1280 896 "${{ inputs.flow_scale }}" 3 | tail -2
 
       - name: Upload the test pictures
         if: always()
