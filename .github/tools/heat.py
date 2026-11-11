@@ -1,6 +1,6 @@
 # Host-side render scale control for builds with a frame step state page (the 3D views' scale at state +0x10 is read by the game's stubs every frame):
 #   DM_HEAT_SCALE=<fair>,<serious>  ceiling while iOS reports that thermal state (down at once, back up after THERMAL_CALM_NS at a lower state)
-#   DM_THERMAL_CAP_LEVEL=<2|3>    the thermal state from which the 30 fps cap holds (default 2, serious; 3 waits for critical and lets the scales carry serious at 60)
+#   DM_THERMAL_CAP_LEVEL=<1|2|3>  the thermal state from which the 30 fps cap holds (default 2, serious; 1 caps from fair, before the system slows the GPU; 3 waits for critical and lets the scales carry serious at 60)
 #   DM_DYN_SCALE=<floor>            at the 60 fps cap: 3+ late presents in a second step the scale down 0.05 (not below floor); 5 s without one step it back up 0.05
 import sys
 p = sys.argv[1]; s = open(p).read()
@@ -32,7 +32,8 @@ static void hs_write(const char *why, int th) {   // the scale shown: the lower 
 }
 static int hs_th = 0, cap_level = -1;
 static int thermal_cap_level(void) {
-    if (cap_level < 0) { const char *e = getenv("DM_THERMAL_CAP_LEVEL"); cap_level = (e && !strcmp(e, "3")) ? 3 : 2; if (cap_level == 3) LOG("[nvn] the 30 fps thermal cap waits for the critical thermal state (DM_THERMAL_CAP_LEVEL=3)"); }
+    if (cap_level < 0) { const char *e = getenv("DM_THERMAL_CAP_LEVEL"); cap_level = (e && !strcmp(e, "3")) ? 3 : (e && !strcmp(e, "1")) ? 1 : 2; if (cap_level == 3) LOG("[nvn] the 30 fps thermal cap waits for the critical thermal state (DM_THERMAL_CAP_LEVEL=3)");
+        if (cap_level == 1) LOG("[nvn] the 30 fps thermal cap starts at the fair thermal state and ends when the device is nominal again (DM_THERMAL_CAP_LEVEL=1)"); }
     return cap_level;
 }
 static void hs_tick_locked(int th, uint64_t now);
