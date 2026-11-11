@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Shader prep for the frame generation module: reads the compute shaders (SPIR-V) out of the user's own DLL,
-# converts the performance-mode chain to MSL with SPIRV-Cross, remaps the Vulkan bindings to Metal slots and
+# converts the performance-mode and quality-mode (q_ roles) chains to MSL with SPIRV-Cross, remaps the Vulkan bindings to Metal slots and
 # writes one .metal per role plus a manifest. Usage: prep.py <dll> <outdir> [--fp32]
 # Bindings (lsfg-vk layout): uniform buffers 0.., samplers 16.., sampled images 32.., storage images 48..
 #   -> Metal: buffer(i), sampler(i), texture(i) for sampled, texture(16+i) for storage.
@@ -27,6 +27,15 @@ ROLES = {
     'delta0': (257, True, 5, 3, 1, 2), 'delta1': (263, True, 3, 2, 0, 1), 'delta2': (264, True, 2, 2, 0, 1), 'delta3': (265, True, 2, 2, 0, 1), 'delta4': (266, True, 4, 1, 1, 2),
     'delta5': (258, True, 6, 1, 1, 2), 'delta6': (271, True, 1, 1, 0, 1), 'delta7': (272, True, 1, 1, 0, 1), 'delta8': (273, True, 1, 1, 0, 1), 'delta9': (274, True, 2, 1, 1, 2),
 }
+
+QUALITY = {   # the same shaders' quality variants: (sampled, storage, buffers, samplers) as in lsfg-vk's registry
+    'alpha0': (1, 2, 0, 1), 'alpha1': (2, 2, 0, 1), 'alpha2': (2, 4, 0, 1), 'alpha3': (4, 4, 0, 1),
+    'beta0': (12, 2, 0, 1), 'beta1': (2, 2, 0, 1), 'beta2': (2, 2, 0, 1), 'beta3': (2, 2, 0, 1), 'beta4': (2, 6, 1, 1),
+    'gamma0': (9, 3, 1, 2), 'gamma1': (3, 4, 0, 1), 'gamma2': (4, 4, 0, 1), 'gamma3': (4, 4, 0, 1), 'gamma4': (6, 1, 1, 2),
+    'delta0': (9, 3, 1, 2), 'delta1': (3, 4, 0, 1), 'delta2': (4, 4, 0, 1), 'delta3': (4, 4, 0, 1), 'delta4': (6, 1, 1, 2),
+    'delta5': (10, 2, 1, 2), 'delta6': (2, 2, 0, 1), 'delta7': (2, 2, 0, 1), 'delta8': (2, 2, 0, 1), 'delta9': (3, 1, 1, 2),
+}
+for _r, _c in QUALITY.items(): ROLES['q_' + _r] = (ROLES[_r][0], False) + _c
 
 def patch_generate(code, hdr=False):   # as lsfg-vk: drop StorageImageWriteWithoutFormat, give the output image a format
     w = list(struct.unpack('<%dI' % (len(code) // 4), code)); i = 5
