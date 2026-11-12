@@ -12,7 +12,7 @@ cred = service_account.Credentials.from_service_account_info(json.loads(os.envir
 s = AuthorizedSession(cred)
 meta = s.get(f'https://www.googleapis.com/drive/v3/files/{fid}', params={'fields': 'name,size', 'supportsAllDrives': 'true'})
 if meta.status_code != 200:
-    print(f'Drive said {meta.status_code}: ' + ('the file is not shared with the service account' if meta.status_code == 404 else re.sub(r'https?://\\S+|\\d{6,}', '<hidden>', meta.json().get('error', {}).get('message', ''))[:200]))
+    print(f'Drive said {meta.status_code}: ' + ('the file is not shared with the service account' if meta.status_code == 404 else re.sub(r'https?://\S+|\d{6,}', '<hidden>', meta.json().get('error', {}).get('message', ''))[:200]))
     sys.exit(1)
 name = os.path.basename(meta.json()['name']) or 'file.bin'
 r = s.get(f'https://www.googleapis.com/drive/v3/files/{fid}', params={'alt': 'media', 'supportsAllDrives': 'true', 'acknowledgeAbuse': 'true'}, stream=True)
