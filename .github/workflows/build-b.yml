@@ -44,6 +44,10 @@ on:
         required: false
         type: boolean
         default: false
+      lite:
+        description: "Lighter-scene switches (DM_LITE_DIST / DM_LITE_GRASS in env.txt)"
+        type: boolean
+        default: true
       fg:
         description: "Build in frame generation (DM_FG=1 in env.txt; needs the C_URL secret)"
         required: false
@@ -126,6 +130,10 @@ jobs:
       - name: Heat-adaptive render scale
         if: ${{ inputs.heat_scale }}
         run: python3 self/.github/tools/heat.py "$RUNNER_TEMP/nx/dm/gfx/nvn/hle_nvn.c"
+
+      - name: Lighter-scene switches
+        if: ${{ inputs.lite }}
+        run: python3 self/.github/tools/lite.py "$RUNNER_TEMP/nx"
 
       - name: Frame generation
         if: ${{ inputs.fg }}
