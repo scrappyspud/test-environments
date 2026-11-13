@@ -63,9 +63,12 @@ static id<MTLTexture> fg_make(const tex_t *t, double period, const int crop[4], 
     }
     if (!g_fg_on || !g_q4) return nil;
     uint64_t tn = now_ns(); double want = g_fg_prev_period * 1e3, dt = g_fg_last ? (tn - g_fg_last) / 1e6 : want; g_fg_last = tn; g_fg_prev_period = period;
-    if (dt < 200) g_fg_ema = 0.85 * g_fg_ema + 0.15 * (dt - want);
-    if (!g_fg_paused && g_fg_ema > 3.2) { g_fg_paused = 1; MLOG("frame generation: paused, the game's frames come late (%.1f ms later than their step on average)", g_fg_ema); }
-    else if (g_fg_paused && g_fg_ema < 0.7) { g_fg_paused = 0; g_fg_n = 0; MLOG("frame generation: resumed (frames %.1f ms late on average)", g_fg_ema); }
+    // Pause only when frames keep coming late (12 of the last 16), not for a single hitch such as a loading spike or an autosave
+    static uint16_t late_bits; static uint32_t on_time_run;
+    if (dt < 200) { int late = dt - want > 4.0; late_bits = (uint16_t)((late_bits << 1) | late); on_time_run = late ? 0 : on_time_run + 1;
+        g_fg_ema = 0.9 * g_fg_ema + 0.1 * (dt - want); }
+    if (!g_fg_paused && __builtin_popcount(late_bits) >= 12) { g_fg_paused = 1; MLOG("frame generation: paused, the game's frames keep coming late (%.1f ms later than their step on average)", g_fg_ema); }
+    else if (g_fg_paused && on_time_run >= 45) { g_fg_paused = 0; g_fg_n = 0; late_bits = 0; MLOG("frame generation: resumed (frames on time for 1.5 s)"); }
     if (g_fg_paused) return nil;
     int two = g_fg_dips && period > 0.045 && period < 0.055;
     id<MTLTexture> src = tex_mtl(t); if (!src) return nil;
