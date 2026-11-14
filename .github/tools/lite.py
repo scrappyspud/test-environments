@@ -4,7 +4,7 @@
 #   DM_LITE_GRASS=<0.4..1>  grass fade distance x this factor (both grass layers fade out nearer; 1 = the game's own)
 # Sites and their meaning from community research's research (MIT, community research: tools/patches.py _traverse_scale_default,
 # _grass_fade; runtime/draw_distance.c), where 0.6 / 0.75 are its tested "Potato" values. The stubs read two floats the host writes into the frame
-# step state page (+0x100, +0x104) before the game runs; 1.0 there gives the game's exact behaviour.
+# step state page (+0x800, +0x804; +0x100..+0x1fc is upstream's ring of widened fovys) before the game runs; 1.0 there gives the game's exact behaviour.
 # Each stub is placed only when the code around its site (+-1 KB) never names x16 / w16 and, for the grass, a free v16..v31: otherwise it is left out
 # (a [lite] line says so) and the switch does nothing.
 import sys, os
@@ -35,9 +35,9 @@ def _lite(ctx):
     S = 0x10a4694
     if word(S) == 0x1e2e1001 and near(S, ['x16', 'w16']):
         ctx.site(S, '01102e1e'); st = ctx.here()
-        ctx.emit(ADRP(16, ctx.here(), ctx.state)); ctx.emit(0xbd400000 | (0x100 // 4) << 10 | 16 << 5 | 1)   # ldr s1, [x16, #0x100]
+        ctx.emit(ADRP(16, ctx.here(), ctx.state)); ctx.emit(0xbd400000 | (0x800 // 4) << 10 | 16 << 5 | 1)   # ldr s1, [x16, #0x800]
         ctx.emit(B(ctx.here(), S + 4))
-        ctx.put(S, [B(S, st)], 'lite: draw distance factor (state +0x100)')
+        ctx.put(S, [B(S, st)], 'lite: draw distance factor (state +0x800)')
         print('[lite] draw distance stub placed')
     else: print('[lite] draw distance stub left out: site %#x is %#x or x16 is used near it' % (S, word(S)))
     # Grass: each layer's store of the camera scale its fades are measured with, 'str s0, [xB, #off]' -> stores s0 / factor (a larger scale fades nearer: 0.6 fades at 0.6 of the distance)
@@ -47,11 +47,11 @@ def _lite(ctx):
         if word(S) != want or fr is None or not near(S, ['x16', 'w16']):
             print('[lite] grass stub at %#x left out (site %#x, free fp register %s)' % (S, word(S), fr)); continue
         ctx.site(S, struct.pack('<I', want).hex()); st = ctx.here()
-        ctx.emit(ADRP(16, ctx.here(), ctx.state)); ctx.emit(0xbd400000 | (0x104 // 4) << 10 | 16 << 5 | fr)   # ldr sF, [x16, #0x104]
+        ctx.emit(ADRP(16, ctx.here(), ctx.state)); ctx.emit(0xbd400000 | (0x804 // 4) << 10 | 16 << 5 | fr)   # ldr sF, [x16, #0x804]
         ctx.emit(0x1e201800 | fr << 16 | 0 << 5 | fr)                                                        # fdiv sF, s0, sF
         ctx.emit(0xbd000000 | (off // 4) << 10 | base << 5 | fr)                                             # str sF, [xB, #off]
         ctx.emit(B(ctx.here(), S + 4))
-        ctx.put(S, [B(S, st)], 'lite: grass fade factor (state +0x104)')
+        ctx.put(S, [B(S, st)], 'lite: grass fade factor (state +0x804)')
         print('[lite] grass stub placed at %#x (scratch s%d)' % (S, fr))
 
 def _frame_step_lite(ctx):
@@ -66,13 +66,13 @@ s = open(L).read()
 a = 'memcpy(dm_fps_state + 0x10, &sc, sizeof sc);'
 assert s.count(a) == 1, 'render scale write moved upstream'
 s = s.replace(a, a + r'''
-    {   // lite.py: one game's draw distance and grass fade factors (state +0x100, +0x104; 1.0 = the game's own), DM_LITE_DIST / DM_LITE_GRASS
+    {   // lite.py: one game's draw distance and grass fade factors (state +0x800, +0x804; 1.0 = the game's own), DM_LITE_DIST / DM_LITE_GRASS
         const char *n[2] = {"DM_LITE_DIST", "DM_LITE_GRASS"}; const float lo[2] = {0.5f, 0.4f};
         for (int i = 0; i < 2; i++) {
             float v = 1.0f; const char *x = getenv(n[i]);
             if (x) { float w = strtof(x, NULL); if (w >= lo[i] && w <= 1.0f) { v = w; LOG("%s=%.2f: %s", n[i], v, i ? "grass fades out nearer" : "placed actors appear nearer"); }
                      else LOG("[RED] %s=%s: must be %.1f to 1.0; the game's own", n[i], x, lo[i]); }
-            memcpy(dm_fps_state + 0x100 + 4 * i, &v, sizeof v);
+            memcpy(dm_fps_state + 0x800 + 4 * i, &v, sizeof v);
         }
     }''')
 open(L, 'w').write(s)
