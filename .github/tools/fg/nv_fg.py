@@ -126,6 +126,54 @@ static id<MTLTexture> fg_make(const tex_t *t, double period, const int crop[4], 
     return out;
 }
 
+
+// DM_MFX_PROBE=1: one-off check of Apple's MetalFX frame interpolation on this device (support, and GPU time per generated frame at the game's
+// 1280x896 with dummy inputs), logged as "[mfx probe]". Everything by name (NSClassFromString / KVC / objc_msgSend), so an SDK without the
+// class still builds, and a device without it only logs that.
+#include <objc/message.h>
+static void mfx_probe(void) {
+    static int done; if (done) return; done = 1;
+    const char *e = getenv("DM_MFX_PROBE"); if (!e || atoi(e) <= 0) return;
+    @try {
+        Class D = NSClassFromString(@"MTLFXFrameInterpolatorDescriptor");
+        if (!D) { MLOG("[mfx probe] MetalFX frame interpolation: not on this system"); return; }
+        BOOL sup = ((BOOL (*)(id, SEL, id))objc_msgSend)(D, sel_registerName("supportsDevice:"), g_dev);
+        BOOL sup4 = [D respondsToSelector:sel_registerName("supportsMetal4FX:")] ? ((BOOL (*)(id, SEL, id))objc_msgSend)(D, sel_registerName("supportsMetal4FX:"), g_dev) : NO;
+        MLOG("[mfx probe] MetalFX frame interpolation: supportsDevice %d, supportsMetal4FX %d (%s)", sup, sup4, g_dev.name.UTF8String);
+        if (!sup) return;
+        const NSUInteger W = 1280, H = 896;
+        id d = [[D alloc] init];
+        [d setValue:@(MTLPixelFormatRGBA16Float) forKey:@"colorTextureFormat"]; [d setValue:@(MTLPixelFormatRGBA16Float) forKey:@"outputTextureFormat"];
+        [d setValue:@(MTLPixelFormatDepth32Float) forKey:@"depthTextureFormat"]; [d setValue:@(MTLPixelFormatRG16Float) forKey:@"motionTextureFormat"];
+        [d setValue:@(W) forKey:@"inputWidth"]; [d setValue:@(H) forKey:@"inputHeight"]; [d setValue:@(W) forKey:@"outputWidth"]; [d setValue:@(H) forKey:@"outputHeight"];
+        uint64_t t0 = now_ns();
+        id fi = ((id (*)(id, SEL, id))objc_msgSend)(d, sel_registerName("newFrameInterpolatorWithDevice:"), g_dev);
+        if (!fi) { MLOG("[mfx probe] could not make a frame interpolator"); return; }
+        MLOG("[mfx probe] interpolator made in %.1f ms", (now_ns() - t0) / 1e6);
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:W height:H mipmapped:NO];
+        td.storageMode = MTLStorageModePrivate; td.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
+        id<MTLTexture> c0 = [g_dev newTextureWithDescriptor:td], c1 = [g_dev newTextureWithDescriptor:td], out = [g_dev newTextureWithDescriptor:td];
+        td.pixelFormat = MTLPixelFormatDepth32Float; id<MTLTexture> dep = [g_dev newTextureWithDescriptor:td];
+        td.pixelFormat = MTLPixelFormatRG16Float; id<MTLTexture> mot = [g_dev newTextureWithDescriptor:td];
+        id<MTLCommandQueue> q = [g_dev newCommandQueue];
+        double ms[12]; int n = 0;
+        for (int i = 0; i < 12; i++) {
+            [fi setValue:(i & 1 ? c1 : c0) forKey:@"colorTexture"]; [fi setValue:(i & 1 ? c0 : c1) forKey:@"prevColorTexture"];
+            [fi setValue:dep forKey:@"depthTexture"]; [fi setValue:mot forKey:@"motionTexture"]; [fi setValue:out forKey:@"outputTexture"];
+            [fi setValue:@((float)W) forKey:@"motionVectorScaleX"]; [fi setValue:@((float)H) forKey:@"motionVectorScaleY"];
+            [fi setValue:@(1.0f / 30) forKey:@"deltaTime"]; [fi setValue:@(0.1f) forKey:@"nearPlane"]; [fi setValue:@(25000.0f) forKey:@"farPlane"];
+            [fi setValue:@(50.0f) forKey:@"fieldOfView"]; [fi setValue:@((float)W / H) forKey:@"aspectRatio"]; [fi setValue:@(i == 0) forKey:@"shouldResetHistory"];
+            id<MTLCommandBuffer> cb = [q commandBuffer];
+            ((void (*)(id, SEL, id))objc_msgSend)(fi, sel_registerName("encodeToCommandBuffer:"), cb);
+            [cb commit]; [cb waitUntilCompleted];
+            if (cb.error) { MLOG("[mfx probe] encode %d: %s", i, cb.error.description.UTF8String); return; }
+            if (i >= 2) ms[n++] = (cb.GPUEndTime - cb.GPUStartTime) * 1e3;
+        }
+        double sum = 0, mx = 0; for (int i = 0; i < n; i++) { sum += ms[i]; if (ms[i] > mx) mx = ms[i]; }
+        MLOG("[mfx probe] GPU per generated frame at %lux%lu: mean %.2f ms, max %.2f ms (over %d)", (unsigned long)W, (unsigned long)H, sum / n, mx, n);
+    } @catch (NSException *x) { MLOG("[mfx probe] exception: %s %s", x.name.UTF8String, x.reason.UTF8String); }
+}
+
 static double g_link_it_tin;''')
 
 # 2. present_now shows the override
@@ -161,6 +209,7 @@ once('    @autoreleasepool { submitted = present_now(&it.t, it.period, it.frame,
         if (pend) {   // a real frame still waiting (its tick never came): show it now, in place of a generated picture
             pthread_mutex_lock(&g_pq_mu); pq_item p = g_fg_pend; g_fg_pend_on = 0; g_fg_pend_tex = nil; pthread_mutex_unlock(&g_pq_mu); mtl_tex_unpin(p.t.serial);
         }
+        mfx_probe();
         int gcrop[4] = {0, 0, 0, 0}; id<MTLTexture> gen2 = nil;
         if (it.period > 0.025) gen = fg_make(&it.t, it.period, it.crop, gcrop, &gen2);
         if (gen) {
