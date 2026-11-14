@@ -6,12 +6,18 @@ name: build-b
 # Secrets (Settings -> Secrets and variables -> Actions):
 #   B_BASE_URL          Google Drive share link of the base game file (.nsp/.xci/.nsz/.xcz, or a .zip/.rar/.7z holding it)
 #   B_UPDATE_URL        Google Drive share link of the update file (same formats)
+#   B2_BASE_URL, B2_UPDATE_URL   the same for a second game (slot 2)
 #   PROD_KEYS           the full text of your prod.keys
 #   ARTIFACT_PASSWORD   password for the encrypted results (already set for the other workflow)
 
 on:
   workflow_dispatch:
     inputs:
+      slot:
+        description: "Which game: 1 (B_BASE_URL / B_UPDATE_URL) or 2 (B2_BASE_URL / B2_UPDATE_URL)"
+        type: choice
+        options: ["1", "2"]
+        default: "1"
       runner:
         description: "Build machine image"
         required: false
@@ -200,13 +206,13 @@ jobs:
 
       - name: Download your game files
         env:
-          BASE_URL: ${{ secrets.B_BASE_URL }}
-          UPDATE_URL: ${{ secrets.B_UPDATE_URL }}
+          BASE_URL: ${{ inputs.slot == '2' && secrets.B2_BASE_URL || secrets.B_BASE_URL }}
+          UPDATE_URL: ${{ inputs.slot == '2' && secrets.B2_UPDATE_URL || secrets.B_UPDATE_URL }}
           GDRIVE_SA: ${{ secrets.GDRIVE_SA }}
         run: |
           set -euo pipefail
           [ -z "${GDRIVE_SA:-}" ] || python3 -m pip install --break-system-packages -q google-auth requests >/dev/null 2>&1
-          [ -n "${BASE_URL:-}" ] && [ -n "${UPDATE_URL:-}" ] || { echo "::error::Add the B_BASE_URL and B_UPDATE_URL secrets"; exit 1; }
+          [ -n "${BASE_URL:-}" ] && [ -n "${UPDATE_URL:-}" ] || { echo "::error::Add the base and update link secrets for game slot ${{ inputs.slot || '1' }}"; exit 1; }
           G="$RUNNER_TEMP/work/game"; D="$RUNNER_TEMP/work/dl"; mkdir -p "$G" "$D"
           n=0
           for U in "$BASE_URL" "$UPDATE_URL"; do
