@@ -137,6 +137,13 @@ jobs:
         if: ${{ inputs.heat_scale }}
         run: python3 self/.github/tools/heat.py "$RUNNER_TEMP/nx/dm/gfx/nvn/hle_nvn.c"
 
+      - name: More video output slots (game slot 2)
+        if: ${{ inputs.slot == '2' }}
+        run: |
+          f="$RUNNER_TEMP/nx/dm/host/hle_movie.c"
+          grep -q '#define MD_NOUT_VIDEO 16 ' "$f" || { echo "::error::MD_NOUT_VIDEO moved upstream"; exit 1; }
+          sed -i '' 's/#define MD_NOUT_VIDEO 16 /#define MD_NOUT_VIDEO 48 /' "$f" && grep -n "define MD_NOUT_VIDEO" "$f"
+
       - name: Lighter-scene switches
         if: ${{ inputs.lite }}
         run: python3 self/.github/tools/lite.py "$RUNNER_TEMP/nx"
