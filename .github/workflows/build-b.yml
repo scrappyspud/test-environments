@@ -7,6 +7,7 @@ name: build-b
 #   B_BASE_URL          Google Drive share link of the base game file (.nsp/.xci/.nsz/.xcz, or a .zip/.rar/.7z holding it)
 #   B_UPDATE_URL        Google Drive share link of the update file (same formats)
 #   B2_BASE_URL, B2_UPDATE_URL   the same for a second game (slot 2)
+#   B_DLC_URL / B2_DLC_URL       optional: the game's DLC file (packed into the build when present)
 #   PROD_KEYS           the full text of your prod.keys
 #   ARTIFACT_PASSWORD   password for the encrypted results (already set for the other workflow)
 
@@ -137,13 +138,6 @@ jobs:
         if: ${{ inputs.heat_scale }}
         run: python3 self/.github/tools/heat.py "$RUNNER_TEMP/nx/dm/gfx/nvn/hle_nvn.c"
 
-      - name: More video output slots (game slot 2)
-        if: ${{ inputs.slot == '2' }}
-        run: |
-          f="$RUNNER_TEMP/nx/dm/host/hle_movie.c"
-          grep -q '#define MD_NOUT_VIDEO 16 ' "$f" || { echo "::error::MD_NOUT_VIDEO moved upstream"; exit 1; }
-          sed -i '' 's/#define MD_NOUT_VIDEO 16 /#define MD_NOUT_VIDEO 48 /' "$f" && grep -n "define MD_NOUT_VIDEO" "$f"
-
       - name: Lighter-scene switches
         if: ${{ inputs.lite }}
         run: python3 self/.github/tools/lite.py "$RUNNER_TEMP/nx"
@@ -215,6 +209,7 @@ jobs:
         env:
           BASE_URL: ${{ inputs.slot == '2' && secrets.B2_BASE_URL || secrets.B_BASE_URL }}
           UPDATE_URL: ${{ inputs.slot == '2' && secrets.B2_UPDATE_URL || secrets.B_UPDATE_URL }}
+          DLC_URL: ${{ inputs.slot == '2' && secrets.B2_DLC_URL || secrets.B_DLC_URL }}
           GDRIVE_SA: ${{ secrets.GDRIVE_SA }}
         run: |
           set -euo pipefail
@@ -222,7 +217,7 @@ jobs:
           [ -n "${BASE_URL:-}" ] && [ -n "${UPDATE_URL:-}" ] || { echo "::error::Add the base and update link secrets for game slot ${{ inputs.slot || '1' }}"; exit 1; }
           G="$RUNNER_TEMP/work/game"; D="$RUNNER_TEMP/work/dl"; mkdir -p "$G" "$D"
           n=0
-          for U in "$BASE_URL" "$UPDATE_URL"; do
+          for U in "$BASE_URL" "$UPDATE_URL" ${DLC_URL:+"$DLC_URL"}; do
             n=$((n+1)); mkdir -p "$D/$n"
             if [ -n "${GDRIVE_SA:-}" ]; then python3 self/.github/tools/gd.py "$U" "$D/$n" 2>&1 | sed -E 's/[A-Za-z0-9_-]{20,}/<id>/g' | tail -n 3 || true; fi
             [ -n "$(ls -A "$D/$n")" ] || gdown --retries 3 "$U" -O "$D/$n/" >"$RUNNER_TEMP/dl.txt" 2>&1 || true
