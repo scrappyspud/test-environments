@@ -15,9 +15,9 @@ on:
   workflow_dispatch:
     inputs:
       slot:
-        description: "Which game: 1 (B_BASE_URL / B_UPDATE_URL) or 2 (B2_BASE_URL / B2_UPDATE_URL)"
+        description: "Which game: 1 (B_*), 2 (B2_*) or 3 (B3_*)"
         type: choice
-        options: ["1", "2"]
+        options: ["1", "2", "3"]
         default: "1"
       runner:
         description: "Build machine image"
@@ -210,9 +210,9 @@ jobs:
 
       - name: Download your game files
         env:
-          BASE_URL: ${{ inputs.slot == '2' && secrets.B2_BASE_URL || secrets.B_BASE_URL }}
-          UPDATE_URL: ${{ inputs.slot == '2' && secrets.B2_UPDATE_URL || secrets.B_UPDATE_URL }}
-          DLC_URL: ${{ inputs.slot == '2' && secrets.B2_DLC_URL || secrets.B_DLC_URL }}
+          BASE_URL: ${{ inputs.slot == '1' && secrets.B_BASE_URL || inputs.slot == '2' && secrets.B2_BASE_URL || inputs.slot == '3' && secrets.B3_BASE_URL || '' }}
+          UPDATE_URL: ${{ inputs.slot == '1' && secrets.B_UPDATE_URL || inputs.slot == '2' && secrets.B2_UPDATE_URL || inputs.slot == '3' && secrets.B3_UPDATE_URL || '' }}
+          DLC_URL: ${{ inputs.slot == '1' && secrets.B_DLC_URL || inputs.slot == '2' && secrets.B2_DLC_URL || inputs.slot == '3' && secrets.B3_DLC_URL || '' }}
           GDRIVE_SA: ${{ secrets.GDRIVE_SA }}
         run: |
           set -euo pipefail
