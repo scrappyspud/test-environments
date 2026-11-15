@@ -87,13 +87,16 @@ s = s.replace(a, r'''// drive.py: the folder picker for the game drive, and what
 @property (weak) UIViewController *vc;
 @end
 @implementation DmDrivePick
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)c { fprintf(stderr, "launcher: game drive pick cancelled\n"); }
 - (void)documentPicker:(UIDocumentPickerViewController *)c didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSURL *u = urls.firstObject; BOOL ok = u && dm_store_game_drive(u);
+    NSURL *u = urls.firstObject; fprintf(stderr, "launcher: game drive picked: %s\n", u.path.UTF8String ?: "(nothing)");
+    BOOL ok = u && dm_store_game_drive(u); fflush(stderr);
     UIAlertController *a = [UIAlertController alertControllerWithTitle:ok ? @"Game drive set" : @"Could not use that folder"
         message:ok ? @"Close the app completely (swipe it away) and open it again. With the drive plugged in, the game reads its files from there." : @"Pick the folder that holds this game's RomFS.img."
         preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self.vc presentViewController:a animated:YES completion:nil];
+    UIViewController *vc = self.vc;   // after the picker is gone: a presentation while it is still closing is dropped
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [vc presentViewController:a animated:YES completion:nil]; });
 }
 @end
 static DmDrivePick *g_drive_pick;
@@ -103,7 +106,8 @@ static void dm_drive_alert(UIViewController *vc, const char *why) {
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Game files" message:m preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Choose Game Drive Folder…" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
         UIDocumentPickerViewController *p = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder]];
-        g_drive_pick = [DmDrivePick new]; g_drive_pick.vc = vc; p.delegate = g_drive_pick;
+        g_drive_pick = [DmDrivePick new]; g_drive_pick.vc = vc; p.delegate = g_drive_pick; p.allowsMultipleSelection = NO;
+        fprintf(stderr, "launcher: game drive picker shown\n"); fflush(stderr);
         [vc presentViewController:p animated:YES completion:nil];
     }]];
     if (dm_game_drive_set()) [a addAction:[UIAlertAction actionWithTitle:@"Forget the Game Drive" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *x) { dm_clear_game_drive(); }]];
