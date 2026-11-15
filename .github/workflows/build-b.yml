@@ -138,6 +138,9 @@ jobs:
         if: ${{ inputs.heat_scale }}
         run: python3 self/.github/tools/heat.py "$RUNNER_TEMP/nx/dm/gfx/nvn/hle_nvn.c"
 
+      - name: Game drive (game files on a USB drive)
+        run: python3 self/.github/tools/drive.py "$RUNNER_TEMP/nx"
+
       - name: Lighter-scene switches
         if: ${{ inputs.lite }}
         run: python3 self/.github/tools/lite.py "$RUNNER_TEMP/nx"
