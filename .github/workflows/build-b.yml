@@ -297,7 +297,7 @@ jobs:
           7zz a -p"$PW" -mhe=on -mx=1 "$RUNNER_TEMP/results.7z" "$S/." >/dev/null
           R="$(find "${GAME_DIR:-/nonexistent}" -path '*/extract/*' -name 'RomFS.img' -print -quit 2>/dev/null)"
           if [ "${{ inputs.romfs_mode }}" = "separate" ] && [ -n "$R" ]; then
-            ls -lh "$R"
+            echo "game image: $(du -h "$R" | cut -f1)"
             # stored, not compressed (the image is already packed); 1.9 GB volumes for easier downloads
             7zz a -p"$PW" -mhe=on -mx=0 -v1900m "$RUNNER_TEMP/data.7z" "$R" >/dev/null
             ls -lh "$RUNNER_TEMP"/data.7z.*
