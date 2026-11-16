@@ -7,13 +7,15 @@
 import sys, os, shutil
 root = sys.argv[1]
 here = os.path.dirname(os.path.abspath(__file__))
-TITLE = 'PROFILE'
+import glob
+_t = [os.path.dirname(g) for g in glob.glob(os.path.join(root, 'dm/games/*/game.tsv')) if 'main=b424be150a8e7d78701cbe7a439d9ebf' in open(g).read()]
+assert len(_t) == 1, 'profile of the build not found'
+TITLE = os.path.basename(_t[0])
 
 # camera cut (the game's profile has no patches.py upstream; stop if one appears, it would need merging)
 p = os.path.join(root, 'dm/games', TITLE, 'patches.py')
-assert os.path.isdir(os.path.dirname(p)), 'game profile missing upstream'
 assert not os.path.exists(p), 'upstream now has a patches.py for this game: merge the cut into it'
-open(p, 'w').write('''# shape.py: 4:3 picture. 1.4.1 main: the projection's aspect re-set (bl at main+0x73de88) is skipped, keeping the constructed 4:3 aspect (as the community narrow-aspect mods do)
+open(p, 'w').write('''# shape.py: 4:3 picture. 1.4.1 main: the projection's aspect re-set (bl at main+0x73de88) is skipped, keeping the constructed 4:3 aspect (as community narrow-aspect mods do)
 CUTS = {
   'b424be150a8e7d78701cbe7a439d9ebf': [
     (0x73de88, '1aa90894', '1f2003d5', 'projection aspect re-set: bl -> nop (4:3 view, shape.py)'),

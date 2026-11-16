@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-# lite.py <nxnative checkout>: lighter-scene switches for one game 1.9.0 (main cd57b23f...), read from env.txt when the game starts:
+# lite.py <nxnative checkout>: lighter-scene switches for one game build (main cd57b23f...), read from env.txt when the game starts:
 #   DM_LITE_DIST=<0.5..1>   placed actors' traverse distance x this factor (trees, rocks, buildings, enemies appear nearer; 1 = the game's own)
 #   DM_LITE_GRASS=<0.4..1>  grass fade distance x this factor (both grass layers fade out nearer; 1 = the game's own)
-# Sites and their meaning from community research's research (MIT, community research: tools/patches.py _traverse_scale_default,
-# _grass_fade; runtime/draw_distance.c), where 0.6 / 0.75 are its tested "Potato" values. The stubs read two floats the host writes into the frame
+# Sites and their meaning from published community research on this build, where 0.6 / 0.75 are its tested low values. The stubs read two floats the host writes into the frame
 # step state page (+0x800, +0x804; +0x100..+0x1fc is upstream's ring of widened fovys) before the game runs; 1.0 there gives the game's exact behaviour.
 # Each stub is placed only when the code around its site (+-1 KB) never names x16 / w16 and, for the grass, a free v16..v31: otherwise it is left out
 # (a [lite] line says so) and the switch does nothing.
 import sys, os
 root = sys.argv[1]
 
-P = os.path.join(root, 'dm/games/PROFILE/patches.py')
+import glob
+_t = [os.path.dirname(g) for g in glob.glob(os.path.join(root, 'dm/games/*/game.tsv')) if 'main=cd57b23fa4bbad65803d9788c01821ee' in open(g).read()]
+assert len(_t) == 1, 'profile of the build not found'
+P = os.path.join(_t[0], 'patches.py')
 s = open(P).read()
 a = "FRAME_STEP = {'cd57b23fa4bbad65803d9788c01821ee': frame_step}"
 assert s.count(a) == 1, 'FRAME_STEP line moved upstream'
@@ -66,7 +68,7 @@ s = open(L).read()
 a = 'memcpy(dm_fps_state + 0x10, &sc, sizeof sc);'
 assert s.count(a) == 1, 'render scale write moved upstream'
 s = s.replace(a, a + r'''
-    {   // lite.py: one game's draw distance and grass fade factors (state +0x800, +0x804; 1.0 = the game's own), DM_LITE_DIST / DM_LITE_GRASS
+    {   // lite.py: the game's draw distance and grass fade factors (state +0x800, +0x804; 1.0 = the game's own), DM_LITE_DIST / DM_LITE_GRASS
         const char *n[2] = {"DM_LITE_DIST", "DM_LITE_GRASS"}; const float lo[2] = {0.5f, 0.4f};
         for (int i = 0; i < 2; i++) {
             float v = 1.0f; const char *x = getenv(n[i]);
