@@ -141,6 +141,9 @@ jobs:
       - name: Game drive (game files on a USB drive)
         run: python3 self/.github/tools/drive.py "$RUNNER_TEMP/nx"
 
+      - name: Screen shape 4:3 (one game build only)
+        run: python3 self/.github/tools/shape.py "$RUNNER_TEMP/nx"
+
       - name: Lighter-scene switches
         if: ${{ inputs.lite }}
         run: python3 self/.github/tools/lite.py "$RUNNER_TEMP/nx"
